@@ -12,6 +12,9 @@ Metrics (targets are in PLAN.md):
               bias are estimated first); also detects a wrong body-frame convention
   gravity     'up' from the accelerometer, rotated into the map with the trajectory and
               averaged over the whole walk (needs neither a still start nor full-rate IMU)
+  revisits    trajectory vs relative poses measured directly between revisits (eval/revisit_pairs.py);
+              the start-end pair is reported separately
+  sharpness   surface thickness of the multi-frame cloud / of single frames (doubled or smeared walls)
   groundtruth only if DATASET/groundtruth.txt exists (synthetic tests): ATE after SE(3) alignment
 
 Usage: python eval/evaluate.py DATASET RUN_DIR [--results CSV]
@@ -27,6 +30,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mv2lib.dataset import Dataset  # noqa: E402
 from mv2lib.traj import (anchor_first, interp_rotations, match_to_frames, read_tum,  # noqa: E402
                          rot_angle_deg, umeyama, valid_mask)
@@ -200,6 +204,93 @@ def gravity(ds, poses, R_ci, lag_s):
             "R_map_from_traj": R_align.round(9).tolist()}
 
 
+def revisits(ds, poses, pairs_path):
+    """Trajectory vs directly measured revisit poses (eval/revisit_pairs.py)."""
+    if not pairs_path or not os.path.isfile(pairs_path):
+        return {"error": "no revisit pairs (run eval/revisit_pairs.py DATASET RUNS_ROOT/_cache/<dataset>/revisit_pairs.json)"}
+    P = json.load(open(pairs_path))
+    if os.path.basename(P.get("dataset", "").rstrip("/")) != ds.name:
+        return {"error": f"pairs file is for another dataset: {P.get('dataset')}"}
+    rows = []
+    for p in P["pairs"]:
+        i, j = p["i"], p["j"]
+        if not (np.all(np.isfinite(poses[i])) and np.all(np.isfinite(poses[j]))):
+            rows.append((p, None, None))
+            continue
+        D = np.linalg.inv(np.array(p["T_i_from_j"])) @ (np.linalg.inv(poses[i]) @ poses[j])
+        rows.append((p, float(np.linalg.norm(D[:3, 3])), rot_angle_deg(D[:3, :3])))
+    ev = [(p, t, r) for p, t, r in rows if t is not None]
+    if not ev:
+        return {"error": "no pair has both frames posed", "pairs_total": len(rows)}
+    tt = np.array([t for _, t, _ in ev])
+    rr = np.array([r for _, _, r in ev])
+    se = [(p, t, r) for p, t, r in ev if p.get("start_end")]
+    worst = sorted(ev, key=lambda x: -x[1])[:10]
+    return {"pairs_total": len(rows), "pairs_evaluated": len(ev),
+            "trans_median_m": float(np.median(tt)), "trans_p90_m": float(np.percentile(tt, 90)), "trans_max_m": float(tt.max()),
+            "rot_median_deg": float(np.median(rr)), "rot_p90_deg": float(np.percentile(rr, 90)), "rot_max_deg": float(rr.max()),
+            "start_end": ({"trans_m": min(t for _, t, _ in se), "rot_deg": min(r for _, _, r in se), "pairs": len(se)} if se else None),
+            "worst": [{"i": p["i"], "j": p["j"], "gap_s": round(p["gap_s"], 1), "trans_m": round(t, 4), "rot_deg": round(r, 3)}
+                      for p, t, r in worst]}
+
+
+def sharpness(ds, poses, n_frames=120, radius=0.05, seed=0):
+    """Surface thickness in the multi-frame cloud / in single frames (median local plane spread).
+    1.0 = the trajectory adds no inconsistency; doubled or smeared surfaces (< ~radius apart) raise it."""
+    from scipy.spatial import cKDTree
+    from fuse import edge_filter
+    rng = np.random.default_rng(seed)
+    k = ds.depth_noise_model()
+    zmax = float(np.clip(np.sqrt(0.04 / k), 1.5, 6.0))
+    idx = np.where(valid_mask(poses))[0]
+    if len(idx) < 10:
+        return {"error": "too few poses"}
+    idx = idx[np.linspace(0, len(idx) - 1, min(n_frames, len(idx))).round().astype(int)]
+    v, u = np.mgrid[0:ds.height:2, 0:ds.width:2]
+    Kinv = np.linalg.inv(ds.K)
+
+    def frame_points(i, n):
+        z = edge_filter(ds.depth_m(i), k)[::2, ::2]
+        ok = (z > 0.3) & (z < zmax)
+        pix = np.stack([u[ok], v[ok], np.ones(ok.sum())], 1) * z[ok][:, None]
+        pc = pix @ Kinv.T
+        if n and len(pc) > n:
+            pc = pc[rng.choice(len(pc), n, replace=False)]
+        return pc
+
+    def spread(pts, centres, tree):
+        out = []
+        for c in centres:
+            nb = tree.query_ball_point(c, radius)
+            if len(nb) < 20:
+                continue
+            q = pts[nb] - pts[nb].mean(0)
+            ev = np.linalg.eigvalsh(q.T @ q / len(nb))
+            if ev[1] < 0.25 * radius ** 2 / 4:        # not a surface patch (edge, thin object)
+                continue
+            out.append(np.sqrt(max(ev[0], 0)))
+        return np.array(out)
+
+    multi, single = [], []
+    for n, i in enumerate(idx):
+        p_cam = frame_points(i, 4000)
+        multi.append(p_cam @ poses[i][:3, :3].T + poses[i][:3, 3])
+        if n % 6 == 0:                                   # single-frame baseline on a subset of frames
+            dense = frame_points(i, 0)
+            if len(dense) > 100:
+                tree = cKDTree(dense)
+                single.append(spread(dense, dense[rng.choice(len(dense), 150)], tree))
+    M = np.concatenate(multi)
+    tree = cKDTree(M)
+    sm = spread(M, M[rng.choice(len(M), 4000, replace=False)], tree)
+    ss = np.concatenate(single) if single else np.array([])
+    if len(sm) < 100 or len(ss) < 100:
+        return {"error": "too few surface patches"}
+    return {"radius_m": radius, "frames": int(len(idx)), "spread_multi_median_m": float(np.median(sm)),
+            "spread_single_median_m": float(np.median(ss)), "ratio": float(np.median(sm) / np.median(ss)),
+            "ratio_p90": float(np.percentile(sm, 90) / np.percentile(ss, 90))}
+
+
 def groundtruth(ds, poses):
     p = ds.groundtruth_path()
     if not p:
@@ -240,6 +331,8 @@ def main():
     ap.add_argument("dataset")
     ap.add_argument("run_dir")
     ap.add_argument("--results", help="results CSV (default: <parent of RUN_DIR>/results.csv)")
+    ap.add_argument("--pairs", help="revisit pairs JSON (default: <parent of RUN_DIR>/_cache/<dataset>/revisit_pairs.json)")
+    ap.add_argument("--no-sharpness", action="store_true")
     a = ap.parse_args()
     ds = Dataset(a.dataset)
     run_dir = os.path.abspath(a.run_dir)
@@ -261,6 +354,9 @@ def main():
     M["gyro"] = gyro_check(ds, poses, R_ci)
     lag = M["gyro"].get("time_offset_ms", 0.0) / 1000.0 if "error" not in M["gyro"] else 0.0
     M["gravity"] = gravity(ds, poses, R_ci, lag)
+    pairs = a.pairs or os.path.join(os.path.dirname(run_dir), "_cache", ds.name, "revisit_pairs.json")
+    M["revisits"] = revisits(ds, poses, pairs)
+    M["sharpness"] = {"skipped": True} if a.no_sharpness else sharpness(ds, poses)
     gt = groundtruth(ds, poses)
     if gt is not None:
         M["groundtruth"] = gt
@@ -281,6 +377,12 @@ def main():
            "gyro_p99_deg": round(g.get("err_p99_deg", float("nan")), 3), "gyro_max_deg": round(g.get("err_max_deg", float("nan")), 3),
            "gyro_frac_le_1deg": round(g.get("frac_le_1deg", float("nan")), 4),
            "convention_ok": g.get("convention_ok", ""), "gyro_bias_ok": g.get("bias_plausible", ""),
+           "revisit_med_m": round(M["revisits"].get("trans_median_m", float("nan")), 4),
+           "revisit_p90_m": round(M["revisits"].get("trans_p90_m", float("nan")), 4),
+           "revisit_med_deg": round(M["revisits"].get("rot_median_deg", float("nan")), 3),
+           "revisit_p90_deg": round(M["revisits"].get("rot_p90_deg", float("nan")), 3),
+           "start_end_m": round(M["revisits"]["start_end"]["trans_m"], 4) if M["revisits"].get("start_end") else "",
+           "sharpness": round(M["sharpness"].get("ratio", float("nan")), 3),
            "ate_rmse_m": round(gt["ate_rmse_m"], 4) if gt and "ate_rmse_m" in gt else "",
            "runtime_s": M["run_info"].get("runtime_s", ""), "evaluated_at": M["evaluated_at"]}
     res = a.results or os.path.join(os.path.dirname(run_dir), "results.csv")
@@ -309,6 +411,20 @@ def main():
         print("gyro:", g["error"])
     if "error" not in gr:
         print(f"gravity: |f| {gr['specific_force_mean_mps2']:.3f} m/s^2, halves disagree {gr['halves_disagree_deg']:.2f} deg")
+    rv, sh = M["revisits"], M["sharpness"]
+    if "error" not in rv:
+        se = rv["start_end"]
+        print(f"revisits: {rv['pairs_evaluated']}/{rv['pairs_total']} pairs; translation median {100 * rv['trans_median_m']:.1f} cm, "
+              f"p90 {100 * rv['trans_p90_m']:.1f} cm, max {100 * rv['trans_max_m']:.1f} cm; rotation median "
+              f"{rv['rot_median_deg']:.2f}, p90 {rv['rot_p90_deg']:.2f} deg"
+              + (f"; start-end {100 * se['trans_m']:.1f} cm / {se['rot_deg']:.2f} deg" if se else "; start-end: no overlapping views"))
+    else:
+        print("revisits:", rv["error"])
+    if "ratio" in sh:
+        print(f"sharpness: surface thickness multi/single = {sh['ratio']:.2f} (p90 {sh['ratio_p90']:.2f}); "
+              f"{1000 * sh['spread_multi_median_m']:.1f} mm vs {1000 * sh['spread_single_median_m']:.1f} mm")
+    elif not sh.get("skipped"):
+        print("sharpness:", sh.get("error"))
     if gt:
         print("groundtruth:", {k: (round(v, 4) if isinstance(v, float) else v) for k, v in gt.items() if k != "up_true_in_traj_frame"})
     for wmsg in warnings:

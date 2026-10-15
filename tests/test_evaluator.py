@@ -20,6 +20,9 @@ from mv2lib.traj import read_tum, write_tum  # noqa: E402
 ds = os.path.abspath(sys.argv[1])
 st, T = read_tum(os.path.join(ds, "groundtruth.txt"))
 work = tempfile.mkdtemp(prefix="mv2_evaltest_")
+pairs = os.path.join(work, "revisit_pairs.json")
+subprocess.run([sys.executable, os.path.join(HERE, "..", "eval", "revisit_pairs.py"), ds, pairs, "--min-gap-s", "10"],
+               check=True, capture_output=True)
 O = np.eye(4)
 O[:3, :3] = [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]          # RTAB-Map base_from_optical
 
@@ -30,7 +33,7 @@ def run(name, stamps, poses):
     rd = os.path.join(work, name)
     subprocess.run([sys.executable, os.path.join(HERE, "..", "eval", "convert_traj.py"), ds, src, rd],
                    check=True, capture_output=True)
-    subprocess.run([sys.executable, os.path.join(HERE, "..", "eval", "evaluate.py"), ds, rd],
+    subprocess.run([sys.executable, os.path.join(HERE, "..", "eval", "evaluate.py"), ds, rd, "--pairs", pairs],
                    check=True, capture_output=True)
     return json.load(open(os.path.join(rd, "metrics.json")))
 
@@ -51,6 +54,9 @@ expect("ground truth: gyro windows max < 1 deg", m["gyro"]["err_max_deg"] < 1.0)
 expect("ground truth: convention OK, bias plausible", m["gyro"]["convention_ok"] and m["gyro"]["bias_plausible"])
 expect("ground truth: gravity error < 1 deg", m["groundtruth"]["gravity_error_deg"] < 1.0)
 expect("ground truth: ATE < 1 mm", m["groundtruth"]["ate_rmse_m"] < 0.001)
+expect("ground truth: revisits found, median < 1 cm, incl. start-end",
+       m["revisits"]["pairs_evaluated"] >= 3 and m["revisits"]["trans_median_m"] < 0.01 and m["revisits"]["start_end"])
+expect("ground truth: sharpness ratio < 1.1", m["sharpness"]["ratio"] < 1.1)
 
 # jump: everything after frame 400 shifted 0.3 m and rotated 10 deg
 J = T.copy()
@@ -72,6 +78,18 @@ for i in range(len(T)):
 m = run("drift", st, Dr)
 expect("drift: no speed violation (smooth)", m["speed"]["frames_over_limit"] == 0)
 expect("drift: flagged as implausible gyro bias", not m["gyro"]["bias_plausible"])
+expect("drift: revisits p90 > 10 cm", m["revisits"]["trans_p90_m"] > 0.10)
+
+# jitter: independent 1.5 cm / 0.3 deg noise on every pose (smeared, slightly doubled surfaces)
+rng = np.random.default_rng(0)
+Ji = T.copy()
+for i in range(len(T)):
+    N = np.eye(4)
+    N[:3, :3] = Rot.from_rotvec(np.radians(0.3) * rng.normal(size=3) / np.sqrt(3)).as_matrix()
+    N[:3, 3] = 0.015 * rng.normal(size=3) / np.sqrt(3)
+    Ji[i] = T[i] @ N
+m = run("jitter", st, Ji)
+expect("jitter: sharpness ratio > 1.3", m["sharpness"]["ratio"] > 1.3)
 
 # missing stretch: frames 300-349 without pose
 keep = np.ones(len(st), bool)
