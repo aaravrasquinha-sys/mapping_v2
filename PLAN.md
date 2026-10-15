@@ -33,6 +33,10 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (â
   and the 0.5 s gyro windows hid it, so the evaluator now also checks single-frame steps (translation and rotation vs
   gyro) and lists outlier frames, which eval/fuse.py skips.
 - ORB-SLAM3 build: needs C++17 + an int fix (patch_orbslam3.sh); Optimizer.cc needs ~6 GB RAM+swap to compile.
+- Tracking loss (60 blank frames in the walk): RTAB-Map with the documented settings never recovered (41 % posed);
+  with Odom/ResetCountdown 1 the sessions were rejoined by loop closures (all non-blank frames posed, ATE 13 mm).
+  ORB-SLAM3 started a new map and merged it; its TUM saver mixes unmerged maps' coordinates, so the runner uses the
+  biggest-map trajectory (patched rgbd_tum) and drops the repeated time stamps it writes while lost.
 - A constant slow yaw drift looks like gyro bias to the gyro check; it is flagged as an implausible bias (> 1 deg/s)
   and measured properly by the revisit checks (next batch).
 
@@ -99,7 +103,7 @@ worse than its own deformed point cloud (kept as native_slac_pointcloud.ply).
 ## Engine runs
 | Run | What |
 |---|---|
-| R1 | RTAB-Map, documented dataset settings + all-frame poses |
+| R1 | RTAB-Map, documented dataset settings + all-frame poses + odometry restart after a loss (Odom/ResetCountdown 1) |
 | R2 | R1 + exhaustive loop search + global bundle adjustment |
 | O1 / O2 | Open3D reconstruction defaults / + SLAC |
 | S1 / S2 | ORB-SLAM3 RGB-D / RGB-D-Inertial (only if needed; S2 only with full-rate IMU) |
