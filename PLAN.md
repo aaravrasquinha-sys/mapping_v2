@@ -15,6 +15,7 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (â
 | S5 evaluator + shared builder | ready: coverage, speed, gyro windows (+ time offset, bias, convention check), gravity, revisit pairs (incl. start-end), sharpness, fuse, views, run comparison (17 regression checks) |
 | S6 Open3D O1/O2 | runner ready (README step 11), O1 verified end to end on the synthetic walk (38 min on 2 cores); engine isolated on Open3D 0.19.0 |
 | S8 final map + replay video | ready: `finish/finalize_map.py` (packaging, MANIFEST, optional guarded colour refinement), `finish/render_video.py`; floor tilt/flatness added to the fuser and comparison |
+| S1 ORB-SLAM3 (conditional) | Dockerfile, build/patch scripts, runner written (README 12b); native build test in progress |
 | S7, S9 | after the walk1 results |
 
 ## Findings on the synthetic walk (979 frames, exact ground truth)
