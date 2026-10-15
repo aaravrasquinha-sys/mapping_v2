@@ -13,7 +13,7 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (â
 | S3 export + check | code ready, tested on synthetic files |
 | S4 RTAB-Map R1/R2 | runner ready (README steps 7â€“9); tested natively with RTAB-Map 0.24.2 on a synthetic walk with ground truth |
 | S5 evaluator + shared builder | ready: coverage, speed, gyro windows (+ time offset, bias, convention check), gravity, revisit pairs (incl. start-end), sharpness, fuse, views, run comparison (17 regression checks) |
-| S6 Open3D O1/O2 | runner ready (README step 11), O1 verified end to end on the synthetic walk (38 min on 2 cores); engine isolated on Open3D 0.19.0 |
+| S6 Open3D O1/O2 | runner ready (README step 11), O1 and O2 verified end to end on the synthetic walk (38 / 79 min on 2 cores); engine isolated on Open3D 0.19.0 |
 | S8 final map + replay video | ready: `finish/finalize_map.py` (packaging, MANIFEST, optional guarded colour refinement), `finish/render_video.py`; floor tilt/flatness added to the fuser and comparison |
 | S1 ORB-SLAM3 (conditional) | ready (README 12b): built natively here with the same scripts as the Dockerfile and verified end to end on the synthetic walk |
 | S7, S9 | after the walk1 results |
@@ -87,6 +87,18 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (â
 - **S9** held-out recording in a different space (still 3 s at start and end on a marked spot), same pipeline,
   zero parameter changes.
 - Later: run on the Jetson, 848Ã—480 depth test, STS integration, anchor (M2).
+
+## Synthetic-walk comparison (979 frames, exact ground truth; one room, so NOT the walk1 decision)
+| | R1 | R2 | O1 | O2 (rigid poses) | S1 ORB-SLAM3 |
+|---|---|---|---|---|---|
+| ATE | 10 mm | 9 mm | 69 mm | 121 mm | 9 mm |
+| gyro windows <= 1 deg / max | 98 % / 1.3 | 88 % / 4.6 | 91 % / 11 | 97 % / 11 | 100 % / 0.7 |
+| single-frame jumps | 0 | 0 | 7 | 7 | 2 (one loop-closure frame) |
+| revisit p90 | 1.2 cm | 0.6 cm | 12 cm | 5.6 cm | 0.7 cm |
+| sharpness | 1.18 | 1.13 | 1.29 | 1.15 | 1.04 |
+| runtime (2 cores) | 1 min | 1.3 min | 36 min | 77 min | 1 min |
+Open3D's jumps sit at its 100-frame fragment joins. O2's SLAC correction is a deformation, so its rigid poses score
+worse than its own deformed point cloud (kept as native_slac_pointcloud.ply).
 
 ## Engine runs
 | Run | What |
