@@ -10,6 +10,7 @@ Engine-independent yardstick for drift and bad loop closures:
   on inliers, overlap, residual and geometry (overlaps that are a single plane or crease are rejected)
   (on a synthetic walk with exact ground truth, accepted pairs were within 5 mm / 0.05 deg)
 - the first and last seconds of the walk are always tried against each other (start-end check)
+- at most 3 hits are verified per 5 s x 5 s cell of (time i, time j); runs on all cores (--jobs)
 
 Output: JSON with T_i_from_j per accepted pair, used by eval/evaluate.py (--pairs, or found
 automatically in RUNS_ROOT/_cache/<dataset name>/revisit_pairs.json).
@@ -18,9 +19,12 @@ Usage: python eval/revisit_pairs.py DATASET OUT_JSON [--rate-hz 2] [--min-gap-s 
 """
 import argparse
 import json
+import multiprocessing
 import os
 import sys
 import time
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")      # parallel over pairs instead (before Open3D loads)
 
 import cv2
 import numpy as np
@@ -128,6 +132,33 @@ def verify(ds, fi, fj, i, j, matcher, clouds):
             "icp_change_m": float(np.linalg.norm(D[:3, 3])), "normal_spread": spread}
 
 
+# worker state (filled before the pool forks, so workers share it copy-on-write)
+_G = {}
+
+
+def _score_chunk(chunk):
+    feats, matcher = _G["feats"], cv2.BFMatcher(cv2.NORM_HAMMING)
+    out = []
+    for i, j in chunk:
+        fi, fj = feats[i], feats[j]
+        if fi is None or fj is None:
+            continue
+        knn = matcher.knnMatch(fi["des"], fj["des"], k=2)
+        g = sum(1 for m, *rest in knn if rest and m.distance < 0.8 * rest[0].distance)
+        if g >= MIN_MATCHES:
+            out.append((g, i, j))
+    return out
+
+
+def _verify_job(ij):
+    i, j = ij
+    cv2.setRNGSeed(int(i) * 100003 + int(j))           # same result whatever worker runs it
+    clouds = _G.setdefault("clouds", {})
+    if len(clouds) > 200:
+        clouds.clear()
+    return i, j, verify(_G["ds"], _G["feats"][i], _G["feats"][j], i, j, cv2.BFMatcher(cv2.NORM_HAMMING), clouds)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dataset")
@@ -136,9 +167,12 @@ def main():
     ap.add_argument("--min-gap-s", type=float, default=20.0)
     ap.add_argument("--max-pairs", type=int, default=400)
     ap.add_argument("--bin-s", type=float, default=5.0, help="keep the best pair per (bin_i, bin_j) cell")
+    ap.add_argument("--jobs", type=int, default=0, help="parallel workers (default: CPU count, at most 12)")
+    ap.add_argument("--max-minutes", type=float, default=40.0,
+                    help="no new verification round after this (rounds go from best to weaker hits)")
     a = ap.parse_args()
     t_start = time.time()
-    cv2.setRNGSeed(0)
+    jobs = a.jobs or min(12, os.cpu_count() or 1)
     ds = Dataset(a.dataset)
     fps = 1.0 / np.median(np.diff(ds.stamps))
     step = max(1, int(round(fps / a.rate_hz)))
@@ -149,46 +183,49 @@ def main():
     orb = cv2.ORB_create(nfeatures=N_FEAT)
     print(f"{len(samples)} sampled frames, extracting features...", flush=True)
     feats = {i: features(ds, i, orb) for i in samples}
-    matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+    _G.update(ds=ds, feats=feats)
     t = ds.stamps
-    cand = [(i, j) for ai, i in enumerate(samples) for j in samples[ai + 1:] if t[j] - t[i] >= a.min_gap_s]
-    print(f"{len(cand)} candidate pairs (gap >= {a.min_gap_s} s); matching...", flush=True)
-    # quick appearance score for all candidates, verify the best per time-bin cell first
-    scored = []
-    for n, (i, j) in enumerate(cand):
-        fi, fj = feats[i], feats[j]
-        if fi is None or fj is None:
-            continue
-        knn = matcher.knnMatch(fi["des"], fj["des"], k=2)
-        g = sum(1 for m, *rest in knn if rest and m.distance < 0.8 * rest[0].distance)
-        if g >= MIN_MATCHES:
-            scored.append((g, i, j))
-        if n % 20000 == 0 and n:
-            print(f"  {n}/{len(cand)}", flush=True)
-    scored.sort(reverse=True)
     T_end = t[-1]
-    start_end = [(g, i, j) for g, i, j in scored if t[i] - t[0] <= 3.0 and T_end - t[j] <= 3.0]
-    cells, pairs, clouds, tried, tries = set(), [], {}, 0, {}
-    print(f"{len(scored)} appearance hits; verifying (at most {TRIES_PER_CELL} per {a.bin_s:g} s x {a.bin_s:g} s cell)...",
-          flush=True)
-    for g, i, j in start_end[:20] + scored:
-        cell = (int((t[i] - t[0]) // a.bin_s), int((t[j] - t[0]) // a.bin_s))
-        se = t[i] - t[0] <= 3.0 and T_end - t[j] <= 3.0
-        if cell in cells or len(pairs) >= a.max_pairs or (tries.get(cell, 0) >= TRIES_PER_CELL and not se):
-            continue
-        tries[cell] = tries.get(cell, 0) + 1
-        tried += 1
-        if tried % 200 == 0:
-            print(f"  verified {tried} candidates, {len(pairs)} pairs accepted", flush=True)
-        r = verify(ds, feats[i], feats[j], i, j, matcher, clouds)
-        if r is None:
-            continue
-        cells.add(cell)
-        r.update({"i": i, "j": j, "name_i": ds.names[i], "name_j": ds.names[j], "gap_s": float(t[j] - t[i]),
-                  "start_end": bool(t[i] - t[0] <= 3.0 and T_end - t[j] <= 3.0)})
-        pairs.append(r)
-        if len(clouds) > 400:
-            clouds.clear()
+    cand = [(i, j) for ai, i in enumerate(samples) for j in samples[ai + 1:] if t[j] - t[i] >= a.min_gap_s]
+    print(f"{len(cand)} candidate pairs (gap >= {a.min_gap_s} s); appearance matching on {jobs} workers...", flush=True)
+    ctx = multiprocessing.get_context("fork")
+    with ctx.Pool(jobs) as pool:
+        chunks = [cand[k:k + 2000] for k in range(0, len(cand), 2000)]
+        scored = [x for part in pool.imap(_score_chunk, chunks) for x in part]
+        scored.sort(reverse=True)
+
+        # verification in rounds: each round takes the next-best untried hit of every cell that has no
+        # accepted pair yet (at most TRIES_PER_CELL per cell; the start-end cell gets up to 20)
+        def cell_of(i, j):
+            if t[i] - t[0] <= 3.0 and T_end - t[j] <= 3.0:
+                return "start_end"
+            return (int((t[i] - t[0]) // a.bin_s), int((t[j] - t[0]) // a.bin_s))
+        queue = {}
+        for g, i, j in scored:
+            c = cell_of(i, j)
+            lim = 20 if c == "start_end" else TRIES_PER_CELL
+            if len(queue.setdefault(c, [])) < lim:
+                queue[c].append((i, j))
+        print(f"{len(scored)} appearance hits in {len(queue)} cells; verifying...", flush=True)
+        pairs, tried, done_cells = [], 0, set()
+        for rnd in range(20):
+            batch = [(c, q[rnd]) for c, q in queue.items() if c not in done_cells and rnd < len(q)]
+            if not batch or len(pairs) >= a.max_pairs:
+                break
+            if time.time() - t_start > 60 * a.max_minutes:
+                print(f"  time budget of {a.max_minutes:g} min used up; stopping after {rnd} rounds", flush=True)
+                break
+            res = pool.map(_verify_job, [ij for _, ij in batch], chunksize=1)
+            tried += len(batch)
+            for (c, _), (i, j, r) in zip(batch, res):
+                if r is None or c in done_cells or len(pairs) >= a.max_pairs:
+                    continue
+                done_cells.add(c)
+                r.update({"i": i, "j": j, "name_i": ds.names[i], "name_j": ds.names[j], "gap_s": float(t[j] - t[i]),
+                          "start_end": c == "start_end"})
+                pairs.append(r)
+            print(f"  round {rnd + 1}: {len(batch)} verified, {len(pairs)} pairs accepted "
+                  f"({time.time() - t_start:.0f} s)", flush=True)
     out = {"dataset": ds.root, "rate_hz": a.rate_hz, "min_gap_s": a.min_gap_s, "samples": len(samples),
            "candidates": len(cand), "appearance_hits": len(scored), "verified_tried": tried,
            "pairs": sorted(pairs, key=lambda p: (p["i"], p["j"])),

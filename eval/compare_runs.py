@@ -9,7 +9,8 @@ Writes RUNS_ROOT/compare.md and RUNS_ROOT/compare.png (with --dataset: compare_<
 
 --pick also writes recommended.json (RUNS_ROOT/recommended_<NAME>.json): the run that misses the fewest
 targets (a target that could not be measured counts as missed for the core checks), ties broken by
-revisit p90, then sharpness, then the simpler engine (RTAB-Map R1, R2, ORB-SLAM3, Open3D O1, O2).
+revisit p90 (5 mm steps), sharpness (0.05 steps), revisit rotation p90 (0.25 deg steps), gyro windows
+within 1 deg (0.5 % steps), then the simpler engine (RTAB-Map R1, R2, ORB-SLAM3, Open3D O1, O2).
 It is a proposal from the numbers; look at the views before trusting it.
 
 Usage: python eval/compare_runs.py RUNS_ROOT [RUN_NAME ...] [--dataset NAME] [--pick]
@@ -66,7 +67,13 @@ def rank_key(name, m):
         except (KeyError, TypeError):
             return default
     order = next((i for i, e in enumerate(ENGINE_ORDER) if e in name), len(ENGINE_ORDER))
-    return (missed, num(lambda x: x["revisits"]["trans_p90_m"], 9.9), num(lambda x: x["sharpness"]["ratio"], 9.9), order)
+    # tie-breaks in steps of about what each metric can resolve (revisit pairs are good to ~5 mm)
+    return (missed,
+            round(num(lambda x: x["revisits"]["trans_p90_m"], 9.9) / 0.005),
+            round(num(lambda x: x["sharpness"]["ratio"], 9.9) / 0.05),
+            round(num(lambda x: x["revisits"]["rot_p90_deg"], 99) / 0.25),
+            -round(num(lambda x: x["gyro"]["frac_le_1deg"], 0) / 0.005),
+            order)
 
 
 def cell(m, get, test, fmt):
