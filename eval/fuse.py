@@ -143,8 +143,12 @@ def main():
     if outliers:
         print(f"skipping {len(outliers)} outlier frames flagged by evaluate.py (single-frame jumps)")
     print(f"Fusing {len(idx)} frames (of {len(ds)}), voxel {a.voxel} m, trunc {a.trunc} m, depth <= {zmax:.2f} m")
+    no_depth = 0
     for n, i in enumerate(idx):
         z = edge_filter(ds.depth_m(i), k)
+        if np.count_nonzero((z > 0) & (z < zmax)) < 500:       # nothing to fuse (covered lens, blank frame)
+            no_depth += 1
+            continue
         rgb = cv2.cvtColor(ds.colour(i), cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         d = o3d.t.geometry.Image(o3d.core.Tensor(np.ascontiguousarray(z)))
         c = o3d.t.geometry.Image(o3d.core.Tensor(np.ascontiguousarray(rgb)))
@@ -154,6 +158,8 @@ def main():
         if n % 500 == 0:
             print(f"  {n}/{len(idx)}", flush=True)
 
+    if no_depth:
+        print(f"skipped {no_depth} frames with (almost) no valid depth")
     mesh = vbg.extract_triangle_mesh().to_legacy()
     floor_z = floor_height(mesh)
     S = np.eye(4)
@@ -171,7 +177,7 @@ def main():
     info = {"T_map_from_traj": T_map.round(9).tolist(), "up_axis": "+z", "units": "m",
             "floor_at_z": 0.0, "floor_shift_m": -floor_z, "floor": floor, "first_camera_looks_along": "+x (horizontal projection)",
             "voxel_m": a.voxel, "trunc_m": a.trunc, "depth_max_m": zmax, "depth_noise_k": k,
-            "frames_fused": len(idx), "every": a.every, "outlier_frames_skipped": len(outliers), "pieces_removed": n_removed,
+            "frames_fused": len(idx), "every": a.every, "outlier_frames_skipped": len(outliers), "no_depth_frames_skipped": no_depth, "pieces_removed": n_removed,
             "mesh_vertices": len(mesh.vertices), "mesh_triangles": len(mesh.triangles), "cloud_points": len(cloud.points),
             "seconds": round(time.time() - t_start, 1), "warnings": warnings}
     with open(os.path.join(run, "map_frame.json"), "w") as fh:

@@ -59,15 +59,32 @@ T0=$(date +%s)
 run_orb > "$RUN/orbslam3.log" 2>&1 || { echo "ERROR: ORB-SLAM3 failed (see $RUN/orbslam3.log)"; tail -20 "$RUN/orbslam3.log"; exit 1; }
 T1=$(date +%s)
 [ -s "$RUN/CameraTrajectory.txt" ] || { echo "ERROR: no CameraTrajectory.txt"; tail -20 "$RUN/orbslam3.log"; exit 1; }
-grep -E "median tracking time|mean tracking time|Map [0-9]+ has|New Map created|Fail to track" "$RUN/orbslam3.log" | sort | uniq -c | head -10 || true
-python - "$RUN" $((T1 - T0)) "$VER" "$DS" "$MAXF" <<'EOF'
+grep -E "median tracking time|mean tracking time|Fail to track|Merge" "$RUN/orbslam3.log" | sort | uniq -c | head -10 || true
+NMAPS=$(grep -c "^Creation of new map with id" "$RUN/orbslam3.log" || true)
+echo "ORB-SLAM3 maps started: $NMAPS (more than 1 = tracking was lost; unmerged maps are left out)"
+TRAJ="$RUN/CameraTrajectory.txt"
+if [ -s "$RUN/CameraTrajectory_biggest_map.txt" ]; then
+  # EuRoC-style output: time in ns -> TUM seconds
+  python - "$RUN/CameraTrajectory_biggest_map.txt" "$RUN/CameraTrajectory_main.txt" <<'EOF'
+import sys
+with open(sys.argv[2], "w") as out:
+    for line in open(sys.argv[1]):
+        p = line.split()
+        if len(p) == 8:
+            out.write(f"{float(p[0]) / 1e9:.6f} " + " ".join(p[1:]) + "\n")
+EOF
+  TRAJ="$RUN/CameraTrajectory_main.txt"
+elif [ "$NMAPS" -gt 1 ]; then
+  echo "WARNING: several maps and no biggest-map trajectory (old, unpatched build?): poses of other maps are wrong"
+fi
+python - "$RUN" $((T1 - T0)) "$VER" "$DS" "$MAXF" "$NMAPS" <<'EOF'
 import json, sys
-d, secs, ver, ds, maxf = sys.argv[1:]
+d, secs, ver, ds, maxf, nmaps = sys.argv[1:]
 json.dump({"engine": "orbslam3", "variant": "S1", "runtime_s": int(secs), "orbslam3": ver,
-           "commit": "4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4", "dataset": ds, "max_frames": int(maxf) or None,
+           "commit": "4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4", "dataset": ds, "maps_started": int(nmaps), "max_frames": int(maxf) or None,
            "settings": open(f"{d}/settings.yaml").read()}, open(f"{d}/run.json", "w"), indent=2)
 EOF
-python "$REPO/eval/convert_traj.py" "$DS" "$RUN/CameraTrajectory.txt" "$RUN"
+python "$REPO/eval/convert_traj.py" "$DS" "$TRAJ" "$RUN"
 python "$REPO/eval/evaluate.py" "$DS" "$RUN"
 [ "$FUSE" -eq 1 ] && python "$REPO/eval/fuse.py" "$DS" "$RUN"
 echo "Done. Results table: $ROOT/results.csv"

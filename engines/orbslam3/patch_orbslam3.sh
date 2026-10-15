@@ -6,17 +6,21 @@
 set -euo pipefail
 D="${1:?usage: patch_orbslam3.sh ORB_SLAM3_DIR}"
 
-patch() {  # file old new label
-  local f="$D/$1" old="$2" new="$3" label="$4"
-  if grep -qF -- "$new" "$f"; then echo "already applied: $label"; return; fi
-  grep -qF -- "$old" "$f" || { echo "ERROR: anchor not found for '$label' in $1"; exit 1; }
-  python3 - "$f" "$old" "$new" <<'EOF'
+patch() {  # file old new label   (exact multi-line strings; old must occur exactly once)
+  python3 - "$D/$1" "$2" "$3" "$4" <<'EOF'
 import sys
-f, old, new = sys.argv[1:]
+f, old, new, label = sys.argv[1:]
 s = open(f).read()
+if new in s:
+    print("already applied:", label)
+    sys.exit(0)
+n = s.count(old)
+if n != 1:
+    print(f"ERROR: anchor for '{label}' found {n} times in {f} (expected once)")
+    sys.exit(1)
 open(f, "w").write(s.replace(old, new))
+print("applied:", label)
 EOF
-  echo "applied: $label"
 }
 
 # Pangolin 0.9 needs C++17 (ORB-SLAM3 forces C++11)
@@ -27,4 +31,10 @@ patch include/LoopClosing.h '    bool mnFullBAIdx;' '    int mnFullBAIdx;' "mnFu
 # headless: no Pangolin viewer window in the RGB-D example
 patch Examples/RGB-D/rgbd_tum.cc 'ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,true);' \
                                  'ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,false);' "headless rgbd_tum"
+# SaveTrajectoryTUM mixes coordinate frames when tracking was lost and a new (unmerged) map was started;
+# SaveTrajectoryEuRoC keeps only the biggest map (frames of other maps are left out = no pose)
+patch Examples/RGB-D/rgbd_tum.cc '    SLAM.SaveTrajectoryTUM("CameraTrajectory.txt");' \
+'    SLAM.SaveTrajectoryTUM("CameraTrajectory.txt");
+    SLAM.SaveTrajectoryEuRoC("CameraTrajectory_biggest_map.txt");   // mv2: biggest map only, t in ns' \
+  "rgbd_tum also saves the biggest-map trajectory"
 echo "ORB-SLAM3 patches OK"

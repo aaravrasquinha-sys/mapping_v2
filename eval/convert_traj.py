@@ -13,6 +13,8 @@ import argparse
 import os
 import sys
 
+import numpy as np
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from mv2lib.dataset import Dataset  # noqa: E402
 from mv2lib.traj import anchor_first, match_to_frames, read_tum, valid_mask, write_tum  # noqa: E402
@@ -29,6 +31,13 @@ def main():
     st, T = read_tum(a.engine_traj)
     if len(st) == 0:
         sys.exit(f"ERROR: no poses in {a.engine_traj}")
+    # repeated stamps: ORB-SLAM3 writes the last good frame's time again for every frame while it is
+    # lost; the first occurrence (stable sort keeps file order) is the real pose, the repeats are dropped
+    _, first = np.unique(st, return_index=True)
+    if len(first) < len(st):
+        print(f"NOTE: {len(st) - len(first)} poses repeat an earlier timestamp (engine lost tracking); "
+              "kept the first of each")
+        st, T = st[first], T[first]
     poses, n = match_to_frames(ds.stamps, st, T, tol_s=a.tol_ms / 1000.0)
     if n == 0:
         sys.exit("ERROR: no trajectory stamp matches a dataset frame (wrong dataset or time base?)")
