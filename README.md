@@ -141,7 +141,7 @@ Paste the table it prints and send `~/mv2_data/runs/compare.png`.
 
 ### 12b. ORB-SLAM3 (only if RTAB-Map and Open3D disagree or neither is clean)
 ```bash
-docker build -t mv2/orbslam3:4452a3c engines/orbslam3          # once, 20-60 min, ~4 GB
+docker build -t mv2/orbslam3:4452a3c engines/orbslam3          # once, 20-60 min, ~4 GB disk, needs ~6 GB free RAM
 bash engines/orbslam3/run_orbslam3.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --max-frames 300 --no-fuse   # smoke test
 bash engines/orbslam3/run_orbslam3.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs
 ```
