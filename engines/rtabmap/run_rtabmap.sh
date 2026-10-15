@@ -12,30 +12,34 @@
 #
 # Usage:
 #   bash engines/rtabmap/run_rtabmap.sh DATASET RUNS_ROOT [--r2] [--max-frames N] [--native]
-#        [--image IMAGE] [--no-fuse]
+#        [--docker] [--image IMAGE] [--no-fuse]
 #   --r2           also make the R2 run
 #   --max-frames N smoke test on the first N frames
-#   --native       use RTAB-Map binaries on PATH (or $RTABMAP_BIN) instead of Docker
-#   --image        Docker image (default introlab3it/rtabmap:noble)
+#   --native       native RTAB-Map: $RTABMAP_BIN, else ~/mv2_tools/rtabmap/bin (setup/install_engines.sh),
+#                  else PATH. This is the default when ~/mv2_tools/rtabmap/bin exists.
+#   --docker       force Docker; --image IMAGE (default introlab3it/rtabmap:noble)
 # Needs the Python venv active (python with mapping_v2 requirements) for the evaluation steps.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 
-DS="" ROOT="" R2=0 MAXF=0 NATIVE=0 FUSE=1 IMAGE="${RTABMAP_IMAGE:-introlab3it/rtabmap:noble}"
+DEFAULT_BIN="${MV2_TOOLS:-$HOME/mv2_tools}/rtabmap/bin"
+NATIVE=0; { [ -n "${RTABMAP_BIN:-}" ] || [ -x "$DEFAULT_BIN/rtabmap-rgbd_dataset" ]; } && NATIVE=1
+DS="" ROOT="" R2=0 MAXF=0 FUSE=1 IMAGE="${RTABMAP_IMAGE:-introlab3it/rtabmap:noble}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --r2) R2=1 ;;
     --max-frames) MAXF="$2"; shift ;;
     --native) NATIVE=1 ;;
-    --image) IMAGE="$2"; shift ;;
+    --docker) NATIVE=0 ;;
+    --image) IMAGE="$2"; NATIVE=0; shift ;;
     --no-fuse) FUSE=0 ;;
-    -h|--help) sed -n 2,22p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,24p "$0"; exit 0 ;;
     *) if [ -z "$DS" ]; then DS="$1"; elif [ -z "$ROOT" ]; then ROOT="$1"; else echo "unknown argument $1"; exit 1; fi ;;
   esac
   shift
 done
-[ -n "$DS" ] && [ -n "$ROOT" ] || { sed -n 2,22p "$0"; exit 1; }
+[ -n "$DS" ] && [ -n "$ROOT" ] || { sed -n 2,24p "$0"; exit 1; }
 DS="$(cd "$DS" && pwd)"
 mkdir -p "$ROOT"; ROOT="$(cd "$ROOT" && pwd)"
 [ -f "$DS/rtabmap_calib.yaml" ] && [ -d "$DS/rgb_sync" ] && [ -d "$DS/depth_sync" ] \
@@ -53,17 +57,22 @@ mkdir -p "$RUN1"
 # ---- how to call RTAB-Map tools (native or Docker; same paths inside and outside the container)
 if [ "$NATIVE" -eq 1 ]; then
   BIN="${RTABMAP_BIN:-}"
+  [ -z "$BIN" ] && [ -x "$DEFAULT_BIN/rtabmap-rgbd_dataset" ] && BIN="$DEFAULT_BIN"
+  [ -n "$BIN" ] || command -v rtabmap-rgbd_dataset >/dev/null \
+    || { echo "ERROR: no native RTAB-Map (run: bash setup/install_engines.sh rtabmap), or use --docker"; exit 1; }
   rt() { local tool="$1"; shift; "${BIN:+$BIN/}$tool" "$@"; }
-  RT_VERSION="native $(rt rtabmap-console -v 2>/dev/null | tail -1)"
-  IMAGE_ID="native"
+  RT_VERSION="native $(rt rtabmap-console -v 2>/dev/null | tail -1 || true)"
+  IMAGE_ID="native ${BIN:-PATH}"
 else
   command -v docker >/dev/null || { echo "ERROR: docker not found (install it, or use --native with RTAB-Map installed)"; exit 1; }
   docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull "$IMAGE"
   IMAGE_ID="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE" 2>/dev/null || echo "$IMAGE")"
   rt() { docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
            -v "$DS:$DS:ro" -v "$ROOT:$ROOT" -w "$ROOT" "$IMAGE" "$@"; }
-  RT_VERSION="$(rt rtabmap-console -v 2>/dev/null | tail -1)"
+  RT_VERSION="$(rt rtabmap-console -v 2>/dev/null | tail -1 || true)"
 fi
+VERS="$(rt rtabmap-rgbd_dataset --version 2>&1 || true)"
+grep -q "^RTAB-Map:" <<< "$VERS" || { echo "ERROR: rtabmap-rgbd_dataset does not run: $(tail -2 <<< "$VERS")"; exit 1; }
 echo "RTAB-Map $RT_VERSION  ($IMAGE_ID)"
 
 # ---- dataset to process (full, or a subset of symlinks for the smoke test)

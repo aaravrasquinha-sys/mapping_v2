@@ -1,173 +1,127 @@
 # mapping_v2
 
 Offline indoor 3D mapping from Intel RealSense D435i recordings (`.db3`).
-The Jetson records; the HP Z440 builds the map. Proven engines (RTAB-Map, Open3D, ORB-SLAM3 if needed)
-do the mapping; this repo holds the exact exporter, the evaluator, a shared map builder and glue.
-See [PLAN.md](PLAN.md) for the full plan and current status.
+The Jetson records; the HP Z440 builds the map. Proven engines (RTAB-Map, ORB-SLAM3, Open3D) do the
+mapping; this repo holds the exact exporter, an engine-independent evaluator, one shared map builder,
+the comparison, and the final packaging. See [PLAN.md](PLAN.md) for the plan, targets and findings.
 
 Nothing here imports or modifies `spatial_tracking_system_v1.0` or `pyslam`.
 
-## Layout
-| Folder | What |
-|---|---|
-| `setup/` | machine check, Python environment (pinned versions) |
-| `bagtools/` | `.db3` inspector, exporter, export checker |
-| `tests/` | synthetic recordings made with the real SDK, self-tests |
-| `engines/rtabmap/` | RTAB-Map runner (Docker, or native) |
-| `eval/` | trajectory converter, evaluator, shared map builder (TSDF), fixed-view renders |
-| `mv2lib/` | shared Python helpers |
-| `finish/`, other engines | coming in the next batches |
+## Quick start on the Z440 (Ubuntu 22.04)
 
-Data lives outside git, in `~/mv2_data/` (`bags/`, `datasets/`, `runs/`).
+Each block is copy-paste. Paths assume the repo is cloned to `~/mv2`.
 
-## Steps on the Z440 (batch 1 + 2)
-
-Run each block, then paste the lines asked for. Paths assume the repo is cloned to `~/mv2`.
-
-### 1. Get the code and check the machine
+### 1. Code, machine check
 ```bash
-git clone https://github.com/aaravrasquinha-sys/mapping_v2 ~/mv2
+git clone https://github.com/aaravrasquinha-sys/mapping_v2 ~/mv2      # later: cd ~/mv2 && git pull
 cd ~/mv2
 bash setup/check_machine.sh
 ```
 Paste the whole output.
 
-### 2. Python environment and self-test (about 5 min, ~2 GB)
+### 2. Engines, built natively (once; 30-90 min; asks for your sudo password for apt)
 ```bash
 cd ~/mv2
-bash setup/make_venv.sh            # creates ~/venvs/mv2
-source ~/venvs/mv2/bin/activate
-bash tests/run_bagtools_tests.sh   # must end with: ALL TESTS PASSED
+bash setup/install_engines.sh          # RTAB-Map + g2o, Pangolin + ORB-SLAM3, Open3D 0.19.0 env
 ```
-If `make_venv.sh` says it cannot create a venv: `sudo apt install python3.10-venv`, then run it again.
+Must end with `RTAB-Map OK`, `ORB-SLAM3 OK` and `install_engines: done`. Re-running skips what is done.
+Everything goes into `~/mv2_tools` (and `~/venvs/o3d019`); no Docker needed.
+If the ORB-SLAM3 compiler gets killed (not enough RAM), add swap and re-run:
+`sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
 
-### 3. Copy the recording and protect it (needs ~9 GB free)
+### 3. Python environment and self-test (about 5 min, ~2 GB)
+```bash
+bash setup/make_venv.sh                # creates ~/venvs/mv2
+source ~/venvs/mv2/bin/activate
+bash tests/run_bagtools_tests.sh       # must end with: ALL TESTS PASSED
+```
+
+### 4. Copy the recording and protect it (needs ~9 GB)
 ```bash
 mkdir -p ~/mv2_data/bags
 scp drdo@192.168.1.101:bags/walk1.db3 ~/mv2_data/bags/
 sha256sum ~/mv2_data/bags/walk1.db3
 ssh drdo@192.168.1.101 sha256sum bags/walk1.db3     # must print the same hash
 chmod a-w ~/mv2_data/bags/walk1.db3
-# old run A results, only to sanity-check the evaluator later (a copy; the Jetson repo is untouched)
-scp -r drdo@192.168.1.101:spatial_tracking_system_v1.0/runs/run_1792054584_bag ~/mv2_data/old_runA
 ```
 
-### 4. Inspect (a minute or two)
+### 5. Smoke test: the whole pipeline on the first 300 frames (about 5 min)
 ```bash
 cd ~/mv2 && source ~/venvs/mv2/bin/activate
-python bagtools/inspect_db3.py ~/mv2_data/bags/walk1.db3 --out ~/mv2_data/walk1.inspect.json
+bash run_all.sh ~/mv2_data/bags/walk1.db3 --smoke 300 --engines "rtabmap orbslam3"
 ```
-Paste everything from the first `- sensor_` line to the end (the stream details and the `VERDICT` lines).
+It ends by printing a summary (`~/mv2_data/runs/SUMMARY_walk1_smoke300.txt`). Paste it.
+Ten seconds of walking cannot have revisits, so `n/a` there is expected.
 
-### 5. Smoke-test export: first 300 frames (under a minute)
+### 6. The real run (estimated 1-4 h; Open3D is the slow part)
 ```bash
-python bagtools/export_db3.py ~/mv2_data/bags/walk1.db3 ~/mv2_data/datasets/walk1_smoke --max-frames 300
-python bagtools/check_export.py ~/mv2_data/bags/walk1.db3 ~/mv2_data/datasets/walk1_smoke
+bash run_all.sh ~/mv2_data/bags/walk1.db3
 ```
-Paste the summary lines and look at `~/mv2_data/datasets/walk1_smoke/contact_sheet.jpg`
-(left: colour, right: depth 0–5 m, blue = near, red = far, black = no depth).
+What it does, in order, skipping anything already finished (so after a failure or Ctrl-C, run the same
+command again):
 
-### 6. Full export (estimated 5–15 min, ~7 GB)
+1. inspect the bag; export every frame and IMU sample exactly; check the export independently against
+   the bag (a failed check stops everything); lock the dataset read-only
+2. find revisits by appearance and measure them directly (the engine-independent drift yardstick)
+3. RTAB-Map R1 and R2, ORB-SLAM3 S1; each trajectory is evaluated (coverage, jumps, rotation vs gyro,
+   revisits, sharpness, floor tilt/flatness) and fused by the same map builder
+4. comparison against the fixed targets, a recommended run, and a **provisional final map**
+   in `~/mv2_data/final/walk1/` with a replay video
+5. Open3D O1 (1-3 h), then the comparison again; the final map is rebuilt only if the pick changes
+
+`--slac` adds Open3D O2 (another 2-6 h). `--engines "rtabmap orbslam3"` skips Open3D.
+
+Send back: the printed summary (also in `~/mv2_data/runs/SUMMARY_walk1.txt`),
+`~/mv2_data/runs/compare_walk1.png` and `~/mv2_data/final/walk1/views.png`.
+
+### 7. Look at the map
+`~/mv2_data/final/walk1/` holds `map_mesh.ply` (full), `map_mesh_view.ply` (lighter), `map_cloud.ply`,
+`trajectory_map.tum`, `map_frame.json`, `metrics.json`, `views.png`, `replay.mp4`, `MANIFEST.json`
+(provenance + sha256) and `README.txt`. Frame: metres, +z up (gravity), floor at z = 0.
 ```bash
-python bagtools/export_db3.py ~/mv2_data/bags/walk1.db3 ~/mv2_data/datasets/walk1
-python bagtools/check_export.py ~/mv2_data/bags/walk1.db3 ~/mv2_data/datasets/walk1 --lock
-rm -rf ~/mv2_data/datasets/walk1_smoke
+sudo apt install -y meshlab && meshlab ~/mv2_data/final/walk1/map_mesh_view.ply
+# or: python -c "import open3d as o3d, sys; o3d.visualization.draw_geometries([o3d.io.read_triangle_mesh(sys.argv[1])])" ~/mv2_data/final/walk1/map_mesh_view.ply
 ```
-Paste the exporter summary, all `PASS`/`FAIL` lines, the `QUALITY` line and `RESULT`,
-and send the contact sheet. `--lock` makes the dataset read-only once it passes.
+The recommendation comes from the numbers; we look at the views together before calling it final.
+To package a different run instead:
+`python finish/finalize_map.py ~/mv2_data/datasets/walk1 ~/mv2_data/runs/<run> ~/mv2_data/final/walk1_<run>`
+(add `--colour-opt` to try colour refinement; it is kept only if it measurably improves colours).
 
-## Steps on the Z440 (batch 3): RTAB-Map baseline
+## Layout
+| Folder | What |
+|---|---|
+| `run_all.sh` | the whole pipeline, resumable |
+| `setup/` | machine check, engine builds (`install_engines.sh`), Python environment (pinned versions) |
+| `bagtools/` | `.db3` inspector, exporter, export checker |
+| `engines/` | runners: `rtabmap/`, `orbslam3/`, `open3d_recon/` (native by default; Docker optional) |
+| `eval/` | trajectory converter, revisit pairs, evaluator, shared map builder, views, comparison |
+| `finish/` | final-map packaging, replay video |
+| `mv2lib/` | shared Python helpers |
+| `tests/` | synthetic recordings made with the real SDK, self-tests |
 
-### 7. Docker (once; skip if `docker run hello-world` already works without sudo)
+Data lives outside git, in `~/mv2_data/` (`bags/`, `datasets/`, `runs/`, `final/`, `logs/`).
+
+## Single steps (what `run_all.sh` calls)
 ```bash
-sudo apt install -y docker.io
-sudo usermod -aG docker $USER      # then log out and back in (or run: newgrp docker)
-docker run --rm hello-world
-docker pull introlab3it/rtabmap:noble          # ~1.4 GB download, ~5 GB on disk
-docker image inspect --format '{{index .RepoDigests 0}}' introlab3it/rtabmap:noble
+python bagtools/inspect_db3.py BAG --out NAME.inspect.json
+python bagtools/export_db3.py BAG ~/mv2_data/datasets/NAME [--max-frames N]
+python bagtools/check_export.py BAG ~/mv2_data/datasets/NAME --lock
+python eval/revisit_pairs.py ~/mv2_data/datasets/NAME ~/mv2_data/runs/_cache/NAME/revisit_pairs.json
+bash engines/rtabmap/run_rtabmap.sh   DATASET ~/mv2_data/runs --r2 [--max-frames N] [--docker]
+bash engines/orbslam3/run_orbslam3.sh DATASET ~/mv2_data/runs      [--max-frames N] [--docker]
+bash engines/open3d_recon/run_open3d.sh DATASET ~/mv2_data/runs [--slac] [--max-frames N]
+python eval/evaluate.py DATASET RUN_DIR          # metrics.json (+ results.csv)
+python eval/fuse.py DATASET RUN_DIR              # shared map builder -> map_mesh.ply, map_cloud.ply, views.png
+python eval/compare_runs.py ~/mv2_data/runs --dataset NAME --pick
+python finish/finalize_map.py DATASET RUN_DIR OUT_DIR [--colour-opt]
+python finish/render_video.py DATASET RUN_DIR [--step 2]
 ```
-Paste the digest line (it pins the exact image; every run also records it in `run.json`).
+Each run folder (`~/mv2_data/runs/<date>_<engine>_<variant>`) holds the engine's own output and log,
+`run.json`, `trajectory.tum`, `metrics.json`, `map_mesh.ply`, `map_cloud.ply`, `map_frame.json`, `views.png`.
 
-### 8. Smoke test: first 300 frames (a few minutes)
-```bash
-cd ~/mv2 && git pull && source ~/venvs/mv2/bin/activate
-bash engines/rtabmap/run_rtabmap.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --max-frames 300 --no-fuse
-```
-Expected in the log: `ERROR: Dataset walk1 is not supported` and `Cannot save calibration ... because it is empty`.
-Both are normal: RTAB-Map then loads our `rtabmap_calib.yaml`. Paste the lines from `coverage:` to `gravity:`.
-(Coverage will be about 300/7185 frames in a smoke test; that is expected.)
-
-### 9. Full run, R1 and R2 (estimated 20–60 min)
-```bash
-bash engines/rtabmap/run_rtabmap.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --r2
-```
-Each run folder (`~/mv2_data/runs/<date>_rtabmap_R1`, `..._R2`) gets: RTAB-Map database and log,
-`trajectory.tum`, `metrics.json`, `map_mesh.ply`, `map_cloud.ply`, `map_frame.json`, `views.png`.
-Paste the summary blocks (from `coverage:` to `gravity:`) and `cat ~/mv2_data/runs/results.csv`, and send both
-`views.png`. Open the maps in MeshLab or CloudCompare (`sudo apt install meshlab`), or:
-```bash
-python -c "import open3d as o3d, sys; o3d.visualization.draw_geometries([o3d.io.read_triangle_mesh(sys.argv[1])])" ~/mv2_data/runs/<run>/map_mesh.ply
-```
-
-## Steps on the Z440 (batch 4): revisit checks, Open3D, comparison
-
-### 10. Revisit pairs: once per dataset (estimated 10–20 min)
-```bash
-cd ~/mv2 && git pull && source ~/venvs/mv2/bin/activate
-python eval/revisit_pairs.py ~/mv2_data/datasets/walk1 ~/mv2_data/runs/_cache/walk1/revisit_pairs.json
-```
-Finds places the walk sees again ≥ 20 s later (by appearance, not by any trajectory) and measures
-their relative pose directly (features + colour-assisted ICP). On a synthetic walk with exact ground truth
-the accepted pairs were within 5 mm / 0.05°. Paste the last line (number of pairs, start-end pairs).
-
-Then re-score the RTAB-Map runs so they include revisits and sharpness:
-```bash
-for r in ~/mv2_data/runs/*_rtabmap_R*; do case "$r" in *smoke*) continue;; esac; python eval/evaluate.py ~/mv2_data/datasets/walk1 "$r"; done
-```
-
-### 11. Open3D reconstruction system (setup once, then O1 and O2; each estimated 1–3 h on CPU)
-```bash
-bash engines/open3d_recon/setup_open3d.sh        # isolated env with Open3D 0.19.0 (0.20.0 has a TSDF bug)
-bash engines/open3d_recon/run_open3d.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --max-frames 300 --no-fuse   # smoke test
-bash engines/open3d_recon/run_open3d.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs            # O1
-bash engines/open3d_recon/run_open3d.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --slac     # O2
-```
-
-### 12. Compare all runs
-```bash
-python eval/compare_runs.py ~/mv2_data/runs --dataset walk1
-```
-Paste the table it prints and send `~/mv2_data/runs/compare.png`.
-
-### 12b. ORB-SLAM3 (only if RTAB-Map and Open3D disagree or neither is clean)
-```bash
-docker build -t mv2/orbslam3:4452a3c engines/orbslam3          # once, 20-60 min, ~4 GB disk, needs ~6 GB free RAM
-bash engines/orbslam3/run_orbslam3.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --max-frames 300 --no-fuse   # smoke test
-bash engines/orbslam3/run_orbslam3.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs
-```
-ORB-SLAM3 is GPLv3: fine as a reference; it matters only if it ships inside a product.
-
-## Steps on the Z440 (batch 5): final map and replay video
-
-### 13. Final map from the winning run (after we pick it together)
-```bash
-python finish/finalize_map.py ~/mv2_data/datasets/walk1 ~/mv2_data/runs/<winning run> ~/mv2_data/final/walk1
-# optional, kept only if it measurably improves colours:
-#   add --colour-opt
-```
-`~/mv2_data/final/walk1/` then holds `map_mesh.ply` (full), `map_mesh_view.ply` (lighter), `map_cloud.ply`,
-`trajectory_map.tum`, `map_frame.json`, `metrics.json`, `views.png`, `MANIFEST.json` (provenance + sha256), `README.txt`.
-Frame: metres, +z up (gravity), floor at z = 0.
-
-### 14. Replay video (a few minutes)
-```bash
-python finish/render_video.py ~/mv2_data/datasets/walk1 ~/mv2_data/runs/<run>
-```
-Writes `<run>/replay.mp4`: camera image with features (red LOST banner when the engine had no pose) next to the
-map growing as it is seen, with the path and the current camera. `--step 2` halves the length.
-
-Single steps, if needed: `eval/convert_traj.py` (engine trajectory → project format), `eval/evaluate.py`
-(metrics), `eval/fuse.py` (shared map builder), `eval/render_views.py` (fixed views).
+Docker instead of native builds (optional): `docker pull introlab3it/rtabmap:noble` and
+`docker build -t mv2/orbslam3:4452a3c engines/orbslam3`, then pass `--docker` to the runners.
+The native builds are the tested path.
 
 ## Exported dataset format
 | File | Content |
@@ -187,5 +141,6 @@ Colour frames with no depth frame within half a frame period are listed in `fram
 flag `no_depth` and are not written to `rgb/`, so `rgb/` and `depth/` always match one-to-one.
 
 ## Pinned versions
-Python 3.10 · pyrealsense2 2.58.4.10922 · Open3D 0.20.0 · numpy 1.26.4 · OpenCV 4.11.0.86 ·
-zstandard 0.25.0 · rosbags 0.11.7 · evo 1.38.0 (all have x86_64 and aarch64 wheels).
+Python 3.10 · pyrealsense2 2.58.4.10922 · Open3D 0.20.0 (0.19.0 for the Open3D engine) · numpy 1.26.4 ·
+OpenCV 4.11.0.86 · zstandard 0.25.0 · rosbags 0.11.7 · evo 1.38.0 · RTAB-Map af1ced2 + g2o 20230806 ·
+ORB-SLAM3 4452a3c + Pangolin 0.9.2.

@@ -36,6 +36,7 @@ MIN_MATCHES, MIN_INLIERS, MIN_INLIER_RATIO = 40, 30, 0.3
 ICP_FITNESS, ICP_RMSE = 0.3, 0.012          # at 1.5 cm on 1 cm clouds
 MIN_NORMAL_SPREAD = 0.05                    # reject overlaps that are one plane or a crease
 MAX_ICP_CHANGE_T, MAX_ICP_CHANGE_R = 0.10, 5.0
+TRIES_PER_CELL = 3                          # appearance hits verified per (bin_i, bin_j) cell at most
 
 
 def features(ds, i, orb):
@@ -167,12 +168,18 @@ def main():
     scored.sort(reverse=True)
     T_end = t[-1]
     start_end = [(g, i, j) for g, i, j in scored if t[i] - t[0] <= 3.0 and T_end - t[j] <= 3.0]
-    cells, pairs, clouds, tried = set(), [], {}, 0
+    cells, pairs, clouds, tried, tries = set(), [], {}, 0, {}
+    print(f"{len(scored)} appearance hits; verifying (at most {TRIES_PER_CELL} per {a.bin_s:g} s x {a.bin_s:g} s cell)...",
+          flush=True)
     for g, i, j in start_end[:20] + scored:
         cell = (int((t[i] - t[0]) // a.bin_s), int((t[j] - t[0]) // a.bin_s))
-        if cell in cells or len(pairs) >= a.max_pairs:
+        se = t[i] - t[0] <= 3.0 and T_end - t[j] <= 3.0
+        if cell in cells or len(pairs) >= a.max_pairs or (tries.get(cell, 0) >= TRIES_PER_CELL and not se):
             continue
+        tries[cell] = tries.get(cell, 0) + 1
         tried += 1
+        if tried % 200 == 0:
+            print(f"  verified {tried} candidates, {len(pairs)} pairs accepted", flush=True)
         r = verify(ds, feats[i], feats[j], i, j, matcher, clouds)
         if r is None:
             continue

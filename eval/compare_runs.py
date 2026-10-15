@@ -4,9 +4,15 @@
 For every run folder under RUNS_ROOT that has metrics.json (or the ones named): a table with
 pass/fail marks, pairwise agreement between runs on the same dataset (translation RMSE after
 SE(3) alignment over common frames), and one image stacking every run's views.png.
-Writes RUNS_ROOT/compare.md and RUNS_ROOT/compare.png.
+Smoke-test runs (run.json max_frames set) are left out unless named.
+Writes RUNS_ROOT/compare.md and RUNS_ROOT/compare.png (with --dataset: compare_<NAME>.md/.png).
 
-Usage: python eval/compare_runs.py RUNS_ROOT [RUN_NAME ...] [--dataset NAME]
+--pick also writes recommended.json (RUNS_ROOT/recommended_<NAME>.json): the run that misses the fewest
+targets (a target that could not be measured counts as missed for the core checks), ties broken by
+revisit p90, then sharpness, then the simpler engine (RTAB-Map R1, R2, ORB-SLAM3, Open3D O1, O2).
+It is a proposal from the numbers; look at the views before trusting it.
+
+Usage: python eval/compare_runs.py RUNS_ROOT [RUN_NAME ...] [--dataset NAME] [--pick]
 """
 import argparse
 import json
@@ -41,6 +47,28 @@ CHECKS = [
 ]
 
 
+CORE = {"posed", "pieces", "jump frames", "gyro<=1deg", "revisit med", "revisit p90", "sharpness"}
+ENGINE_ORDER = ["rtabmap_R1", "rtabmap_R2", "orbslam3_S1", "open3d_O1", "open3d_O2"]
+
+
+def rank_key(name, m):
+    missed = 0
+    for label, g, t, f in CHECKS:
+        if t is None:
+            continue
+        ok = cell(m, g, t, f)[1]
+        if ok is False or (ok is None and label in CORE):
+            missed += 1
+    def num(get, default):
+        try:
+            v = get(m)
+            return default if v is None else float(v)
+        except (KeyError, TypeError):
+            return default
+    order = next((i for i, e in enumerate(ENGINE_ORDER) if e in name), len(ENGINE_ORDER))
+    return (missed, num(lambda x: x["revisits"]["trans_p90_m"], 9.9), num(lambda x: x["sharpness"]["ratio"], 9.9), order)
+
+
 def cell(m, get, test, fmt):
     try:
         v = get(m)
@@ -57,6 +85,7 @@ def main():
     ap.add_argument("runs_root")
     ap.add_argument("runs", nargs="*")
     ap.add_argument("--dataset", help="only runs on this dataset (folder name)")
+    ap.add_argument("--pick", action="store_true", help="write the recommended run (see above)")
     a = ap.parse_args()
     root = os.path.abspath(a.runs_root)
     names = a.runs or sorted(d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "metrics.json")))
@@ -67,6 +96,11 @@ def main():
         if os.path.isfile(mf):
             m["map"] = json.load(open(mf))
         if a.dataset and os.path.basename(m["dataset"].rstrip("/")) != a.dataset:
+            continue
+        rj = os.path.join(root, n, "run.json")
+        if not a.runs and os.path.isfile(rj) and json.load(open(rj)).get("max_frames"):
+            continue                                   # smoke test
+        if not os.path.isfile(os.path.join(root, n, "trajectory.tum")):
             continue
         runs.append((n, m))
     if not runs:
@@ -106,7 +140,19 @@ def main():
                 e = np.linalg.norm(A @ T[:3, :3].T + T[:3, 3] - B, axis=1)
                 row.append(f"{np.sqrt((e ** 2).mean()):.3f} m")
             lines.append(f"| {n1} | " + " | ".join(row) + " |")
-    out_md = os.path.join(root, "compare.md")
+    suffix = f"_{a.dataset}" if a.dataset else ""
+    if a.pick:
+        ranked = sorted(runs, key=lambda r: rank_key(*r))
+        best, bm = ranked[0]
+        k = rank_key(best, bm)
+        lines += ["", "## Recommendation (from the numbers; check the views)", "",
+                  *[f"{i + 1}. {n}: {rank_key(n, m)[0]} targets missed" for i, (n, m) in enumerate(ranked)], "",
+                  f"Recommended: **{best}**"]
+        rec = {"recommended": best, "run_dir": os.path.join(root, best), "targets_missed": k[0],
+               "clean": k[0] == 0, "ranking": [[n, rank_key(n, m)[0]] for n, m in ranked],
+               "dataset": a.dataset}
+        json.dump(rec, open(os.path.join(root, f"recommended{suffix}.json"), "w"), indent=2)
+    out_md = os.path.join(root, f"compare{suffix}.md")
     open(out_md, "w").write("\n".join(lines) + "\n")
     print("\n".join(lines))
 
@@ -119,8 +165,8 @@ def main():
             cv2.putText(im, n, (10, im.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 200), 2)
             imgs.append(im)
     if imgs:
-        cv2.imwrite(os.path.join(root, "compare.png"), np.vstack(imgs))
-        print(f"\nimages: {os.path.join(root, 'compare.png')}")
+        cv2.imwrite(os.path.join(root, f"compare{suffix}.png"), np.vstack(imgs))
+        print(f"\nimages: {os.path.join(root, f'compare{suffix}.png')}")
     print(f"table: {out_md}")
 
 

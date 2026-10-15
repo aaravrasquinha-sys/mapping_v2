@@ -4,26 +4,31 @@
 # long as the recording). Output trajectory: CameraTrajectory.txt (TUM, camera frame).
 #
 # Usage:
-#   bash engines/orbslam3/run_orbslam3.sh DATASET RUNS_ROOT [--max-frames N] [--native] [--image IMG] [--no-fuse]
-#   --native   use a native build: $ORB_SLAM3_DIR (default ~/orbslam3/ORB_SLAM3)
-#   --image    Docker image (default mv2/orbslam3:4452a3c, built from engines/orbslam3/Dockerfile)
+#   bash engines/orbslam3/run_orbslam3.sh DATASET RUNS_ROOT [--max-frames N] [--native|--docker] [--image IMG] [--no-fuse]
+#   --native   native build: $ORB_SLAM3_DIR (default ~/mv2_tools/ORB_SLAM3, made by setup/install_engines.sh);
+#              the default when that build exists
+#   --docker   Docker image (--image, default mv2/orbslam3:4452a3c, built from engines/orbslam3/Dockerfile)
 # Needs the project venv active.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-DS="" ROOT="" MAXF=0 NATIVE=0 FUSE=1 IMAGE="${ORBSLAM3_IMAGE:-mv2/orbslam3:4452a3c}"
+TOOLS="${MV2_TOOLS:-$HOME/mv2_tools}"
+O="${ORB_SLAM3_DIR:-$TOOLS/ORB_SLAM3}"
+NATIVE=0; [ -x "$O/Examples/RGB-D/rgbd_tum" ] && NATIVE=1
+DS="" ROOT="" MAXF=0 FUSE=1 IMAGE="${ORBSLAM3_IMAGE:-mv2/orbslam3:4452a3c}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --max-frames) MAXF="$2"; shift ;;
     --native) NATIVE=1 ;;
-    --image) IMAGE="$2"; shift ;;
+    --docker) NATIVE=0 ;;
+    --image) IMAGE="$2"; NATIVE=0; shift ;;
     --no-fuse) FUSE=0 ;;
-    -h|--help) sed -n 2,11p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,12p "$0"; exit 0 ;;
     *) if [ -z "$DS" ]; then DS="$1"; elif [ -z "$ROOT" ]; then ROOT="$1"; else echo "unknown argument $1"; exit 1; fi ;;
   esac
   shift
 done
-[ -n "$DS" ] && [ -n "$ROOT" ] || { sed -n 2,11p "$0"; exit 1; }
+[ -n "$DS" ] && [ -n "$ROOT" ] || { sed -n 2,12p "$0"; exit 1; }
 python -c "import open3d, pyrealsense2" 2>/dev/null || { echo "ERROR: activate the project venv first"; exit 1; }
 DS="$(cd "$DS" && pwd)"
 mkdir -p "$ROOT"; ROOT="$(cd "$ROOT" && pwd)"
@@ -38,8 +43,8 @@ else cp "$DS/associations.txt" "$RUN/associations.txt"; fi
 echo "ORB-SLAM3 RGB-D on $(wc -l < "$RUN/associations.txt") frames -> $RUN"
 
 if [ "$NATIVE" -eq 1 ]; then
-  O="${ORB_SLAM3_DIR:-$HOME/orbslam3/ORB_SLAM3}"
-  export LD_LIBRARY_PATH="$O/lib:$O/Thirdparty/DBoW2/lib:$O/Thirdparty/g2o/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
+  [ -x "$O/Examples/RGB-D/rgbd_tum" ] || { echo "ERROR: no ORB-SLAM3 build in $O (run: bash setup/install_engines.sh orbslam3)"; exit 1; }
+  export LD_LIBRARY_PATH="$O/lib:$O/Thirdparty/DBoW2/lib:$O/Thirdparty/g2o/lib:$TOOLS/pangolin/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
   run_orb() { ( cd "$RUN" && "$O/Examples/RGB-D/rgbd_tum" "$O/Vocabulary/ORBvoc.txt" "$RUN/settings.yaml" "$DS" "$RUN/associations.txt" ); }
   VER="native $(git -C "$O" rev-parse --short HEAD 2>/dev/null || echo '?')"
 else
