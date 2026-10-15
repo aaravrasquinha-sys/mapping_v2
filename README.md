@@ -13,7 +13,10 @@ Nothing here imports or modifies `spatial_tracking_system_v1.0` or `pyslam`.
 | `setup/` | machine check, Python environment (pinned versions) |
 | `bagtools/` | `.db3` inspector, exporter, export checker |
 | `tests/` | synthetic recordings made with the real SDK, self-tests |
-| `engines/`, `eval/`, `finish/` | coming in the next batches |
+| `engines/rtabmap/` | RTAB-Map runner (Docker, or native) |
+| `eval/` | trajectory converter, evaluator, shared map builder (TSDF), fixed-view renders |
+| `mv2lib/` | shared Python helpers |
+| `finish/`, other engines | coming in the next batches |
 
 Data lives outside git, in `~/mv2_data/` (`bags/`, `datasets/`, `runs/`).
 
@@ -72,6 +75,42 @@ rm -rf ~/mv2_data/datasets/walk1_smoke
 ```
 Paste the exporter summary, all `PASS`/`FAIL` lines, the `QUALITY` line and `RESULT`,
 and send the contact sheet. `--lock` makes the dataset read-only once it passes.
+
+## Steps on the Z440 (batch 3): RTAB-Map baseline
+
+### 7. Docker (once; skip if `docker run hello-world` already works without sudo)
+```bash
+sudo apt install -y docker.io
+sudo usermod -aG docker $USER      # then log out and back in (or run: newgrp docker)
+docker run --rm hello-world
+docker pull introlab3it/rtabmap:noble          # ~1.4 GB download, ~5 GB on disk
+docker image inspect --format '{{index .RepoDigests 0}}' introlab3it/rtabmap:noble
+```
+Paste the digest line (it pins the exact image; every run also records it in `run.json`).
+
+### 8. Smoke test: first 300 frames (a few minutes)
+```bash
+cd ~/mv2 && git pull && source ~/venvs/mv2/bin/activate
+bash engines/rtabmap/run_rtabmap.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --max-frames 300 --no-fuse
+```
+Expected in the log: `ERROR: Dataset walk1 is not supported` and `Cannot save calibration ... because it is empty`.
+Both are normal: RTAB-Map then loads our `rtabmap_calib.yaml`. Paste the lines from `coverage:` to `gravity:`.
+(Coverage will be about 300/7185 frames in a smoke test; that is expected.)
+
+### 9. Full run, R1 and R2 (estimated 20–60 min)
+```bash
+bash engines/rtabmap/run_rtabmap.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --r2
+```
+Each run folder (`~/mv2_data/runs/<date>_rtabmap_R1`, `..._R2`) gets: RTAB-Map database and log,
+`trajectory.tum`, `metrics.json`, `map_mesh.ply`, `map_cloud.ply`, `map_frame.json`, `views.png`.
+Paste the summary blocks (from `coverage:` to `gravity:`) and `cat ~/mv2_data/runs/results.csv`, and send both
+`views.png`. Open the maps in MeshLab or CloudCompare (`sudo apt install meshlab`), or:
+```bash
+python -c "import open3d as o3d, sys; o3d.visualization.draw_geometries([o3d.io.read_triangle_mesh(sys.argv[1])])" ~/mv2_data/runs/<run>/map_mesh.ply
+```
+
+Single steps, if needed: `eval/convert_traj.py` (engine trajectory → project format), `eval/evaluate.py`
+(metrics), `eval/fuse.py` (shared map builder), `eval/render_views.py` (fixed views).
 
 ## Exported dataset format
 | File | Content |

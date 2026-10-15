@@ -7,11 +7,21 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (�
 ## Status
 | Step | State |
 |---|---|
-| S0 machine facts | waiting for `setup/check_machine.sh` output |
+| S0 machine facts | waiting for `setup/check_machine.sh` output (assumed: standard Ubuntu 22.04, Docker installable) |
 | S1 copy + protect bag | ready (README step 3) |
 | S2 inspect | code ready, tested on synthetic files |
 | S3 export + check | code ready, tested on synthetic files |
-| S4–S9 | next batches |
+| S4 RTAB-Map R1/R2 | runner ready (README steps 7–9); tested natively with RTAB-Map 0.24.2 on a synthetic walk with ground truth |
+| S5 evaluator + shared builder | part 1 ready: coverage, speed, gyro windows (+ time offset, bias, convention check), gravity, fuse, views. Part 2 (revisit pairs, sharpness, first-vs-last) next |
+| S6–S9 | next batches |
+
+## Findings on the synthetic walk (979 frames, exact ground truth)
+- RTAB-Map R1: ATE 9–10 mm (matches RTAB-Map's own figure), 100 % posed, map visually clean.
+  Runs differ slightly (9.0 vs 10.2 mm): RTAB-Map is not bit-deterministic -> the run-twice rule is needed.
+- R2 (exhaustive loop search + global BA) was NOT better locally: gyro windows max 4.6 deg vs 1.3 deg for R1.
+- Open3D 0.20.0 (`open3d-cpu`): legacy ScalableTSDFVolume fuses nothing; the builder uses the tensor VoxelBlockGrid.
+- A constant slow yaw drift looks like gyro bias to the gyro check; it is flagged as an implausible bias (> 1 deg/s)
+  and measured properly by the revisit checks (next batch).
 
 ## Facts checked before writing code (on files made with the same SDK, 2.58.4)
 - `.db3` = plain SQLite; every IMU sample is its own message; messages are zstd-compressed by default;
