@@ -38,6 +38,8 @@ from mv2lib.traj import (anchor_first, interp_rotations, match_to_frames, read_t
 SPEED_LIMIT = 1.5          # m/s, brisk walk
 WIN_SPEED_S = 0.2
 WIN_GYRO_S = 0.5
+STEP_NOISE_M = 0.03      # allowance for pose noise in one frame step
+FRAME_ROT_LIMIT_DEG = 2.0   # per-frame rotation vs gyro
 BIAS_LIMIT_DPS = 1.0      # D435i gyro zero-rate offset is typically well below this
 
 
@@ -82,7 +84,17 @@ def speed(stamps, poses):
         return {"error": "too few poses"}
     vs = np.array([x[1] for x in v])
     bad = [int(x[0]) for x in v if x[1] > SPEED_LIMIT]
+    # single-frame steps: a pose that jumps away and back is invisible to the 0.2 s window
+    spikes = []
+    for k in range(1, len(poses)):
+        a, b = poses[k - 1], poses[k]
+        if np.all(np.isfinite(a)) and np.all(np.isfinite(b)):
+            step = np.linalg.norm(b[:3, 3] - a[:3, 3])
+            if step > SPEED_LIMIT * (stamps[k] - stamps[k - 1]) + STEP_NOISE_M:
+                spikes.append((k, step))
     return {"window_s": WIN_SPEED_S, "max_mps": float(vs.max()), "p999_mps": float(np.percentile(vs, 99.9)),
+            "step_spikes": len(spikes), "step_spike_frames": [int(k) for k, _ in spikes][:50],
+            "max_step_m": float(max((st for _, st in spikes), default=0.0)),
             "median_mps": float(np.median(vs)), "frames_over_limit": len(bad), "limit_mps": SPEED_LIMIT,
             "first_bad_frames": bad[:20], "max_rot_dps": float(max(w))}
 
@@ -160,6 +172,14 @@ def gyro_check(ds, poses, R_ci):
         da = np.array([np.linalg.norm(mean_rate(r[2], r[3], lag) - bias - M @ r[1]) for r in rates[::10]])
         alt[name] = float(np.median(da))
     d0 = np.array([np.linalg.norm(mean_rate(r[2], r[3], lag) - bias - r[1]) for r in rates[::10]])
+    # per-frame rotation vs gyro (catches out-and-back rotation spikes that cancel inside a window)
+    frame_err = []
+    for r in rates:
+        dt = r[3] - r[2]
+        e_deg = np.degrees(np.linalg.norm((mean_rate(r[2], r[3], lag) - bias - r[1]) * dt))
+        frame_err.append((r[2], e_deg))
+    stamp_to_frame = {round(t, 6): i for i, t in enumerate(ds.stamps)}
+    rot_spikes = [stamp_to_frame.get(round(t, 6), -1) + 1 for t, e_deg in frame_err if e_deg > FRAME_ROT_LIMIT_DEG]
     convention_ok = all(float(np.median(d0)) <= v for v in alt.values())
     return {"window_s": WIN_GYRO_S, "time_offset_ms": round(1000 * lag, 1), "offset_correlation": round(best[1], 3),
             "gyro_bias_dps": np.degrees(bias).round(3).tolist(),
@@ -167,6 +187,7 @@ def gyro_check(ds, poses, R_ci):
             "err_p50_deg": float(np.median(e)), "err_p99_deg": float(np.percentile(e, 99)),
             "err_max_deg": float(e.max()), "frac_le_1deg": float((e <= 1.0).mean()),
             "worst_windows": [{"frame": int(k), "deg": round(v, 2)} for k, v in sorted(errs, key=lambda x: -x[1])[:10]],
+            "frame_rot_spikes": len(rot_spikes), "frame_rot_spike_frames": [int(k) for k in rot_spikes][:50],
             "rate_residual_median_dps": float(np.degrees(np.median(d0))),
             "convention_ok": bool(convention_ok), "convention_alternatives_dps": {k: float(np.degrees(v)) for k, v in alt.items()}}
 
@@ -363,6 +384,8 @@ def main():
         if "up_in_traj_frame" in M["gravity"] and "up_true_in_traj_frame" in gt:
             u, v = np.array(M["gravity"]["up_in_traj_frame"]), np.array(gt["up_true_in_traj_frame"])
             gt["gravity_error_deg"] = float(np.degrees(np.arccos(np.clip(u @ v, -1, 1))))
+    out_frames = set(M["speed"].get("step_spike_frames", [])) | set(M["gyro"].get("frame_rot_spike_frames", []))
+    M["outlier_frames"] = sorted(int(k) for k in out_frames)
     run_json = os.path.join(run_dir, "run.json")
     M["run_info"] = json.load(open(run_json)) if os.path.isfile(run_json) else {}
     M["warnings"] = warnings
@@ -374,6 +397,7 @@ def main():
            "variant": M["run_info"].get("variant", ""), "dataset": ds.name,
            "posed_frac": round(c["fraction"], 4), "pieces": c["pieces"],
            "max_speed_mps": round(s.get("max_mps", float("nan")), 3), "speed_violations": s.get("frames_over_limit", ""),
+           "jump_frames": len(M["outlier_frames"]),
            "gyro_p99_deg": round(g.get("err_p99_deg", float("nan")), 3), "gyro_max_deg": round(g.get("err_max_deg", float("nan")), 3),
            "gyro_frac_le_1deg": round(g.get("frac_le_1deg", float("nan")), 4),
            "convention_ok": g.get("convention_ok", ""), "gyro_bias_ok": g.get("bias_plausible", ""),
@@ -399,11 +423,13 @@ def main():
           f"longest gap {c['longest_gap_frames']} frames")
     if "error" not in s:
         print(f"speed: max {s['max_mps']:.2f} m/s, p99.9 {s['p999_mps']:.2f}, frames over {SPEED_LIMIT} m/s: "
-              f"{s['frames_over_limit']}; max rotation rate {s['max_rot_dps']:.0f} deg/s")
+              f"{s['frames_over_limit']}; max rotation rate {s['max_rot_dps']:.0f} deg/s; single-frame jumps {s['step_spikes']}"
+              + (f" (largest {100 * s['max_step_m']:.1f} cm)" if s['step_spikes'] else ""))
     if "error" not in g:
         print(f"gyro: offset {g['time_offset_ms']} ms (corr {g['offset_correlation']}), bias {g['gyro_bias_dps']} deg/s; "
               f"0.5 s windows: p50 {g['err_p50_deg']:.2f}, p99 {g['err_p99_deg']:.2f}, max {g['err_max_deg']:.2f} deg, "
-              f"<=1 deg {100 * g['frac_le_1deg']:.1f} %; convention {'OK' if g['convention_ok'] else 'MISMATCH'}")
+              f"<=1 deg {100 * g['frac_le_1deg']:.1f} %; per-frame rotation spikes {g['frame_rot_spikes']}; "
+              f"convention {'OK' if g['convention_ok'] else 'MISMATCH'}")
         if not g["bias_plausible"]:
             print(f"WARNING: estimated gyro bias above {BIAS_LIMIT_DPS} deg/s: slow rotation drift in the "
                   "trajectory, or an uncalibrated gyro (revisit checks decide which)")
@@ -427,6 +453,8 @@ def main():
         print("sharpness:", sh.get("error"))
     if gt:
         print("groundtruth:", {k: (round(v, 4) if isinstance(v, float) else v) for k, v in gt.items() if k != "up_true_in_traj_frame"})
+    if M["outlier_frames"]:
+        print(f"outlier frames (skipped by eval/fuse.py): {len(M['outlier_frames'])}: {M['outlier_frames'][:20]}")
     for wmsg in warnings:
         print("WARNING:", wmsg)
     print(f"metrics: {os.path.join(run_dir, 'metrics.json')}   results: {res}")

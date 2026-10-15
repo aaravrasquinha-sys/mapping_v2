@@ -49,7 +49,7 @@ def expect(label, cond):
 
 m = run("gt", st, T)
 expect("ground truth: 100 % posed, 1 piece", m["coverage"]["fraction"] == 1.0 and m["coverage"]["pieces"] == 1)
-expect("ground truth: no speed violations", m["speed"]["frames_over_limit"] == 0)
+expect("ground truth: no speed violations, no outlier frames", m["speed"]["frames_over_limit"] == 0 and not m["outlier_frames"])
 expect("ground truth: gyro windows max < 1 deg", m["gyro"]["err_max_deg"] < 1.0)
 expect("ground truth: convention OK, bias plausible", m["gyro"]["convention_ok"] and m["gyro"]["bias_plausible"])
 expect("ground truth: gravity error < 1 deg", m["groundtruth"]["gravity_error_deg"] < 1.0)
@@ -68,6 +68,15 @@ m = run("jump", st, J)
 expect("jump: speed violation detected", m["speed"]["frames_over_limit"] > 0)
 expect("jump: gyro window error > 5 deg", m["gyro"]["err_max_deg"] > 5.0)
 expect("jump: ATE > 5 cm", m["groundtruth"]["ate_rmse_m"] > 0.05)
+
+# single-frame spike: frame 500 alone is 20 cm / 5 deg off (out and back; the windows cancel it)
+Sp = T.copy()
+D = np.eye(4)
+D[:3, :3] = Rot.from_euler("x", 5, degrees=True).as_matrix()
+D[:3, 3] = [0.2, 0, 0]
+Sp[500] = T[500] @ D
+m = run("spike", st, Sp)
+expect("spike: frames 500/501 flagged as outliers", {500, 501} <= set(m["outlier_frames"]))
 
 # slow yaw drift of 2 deg/s about world z (smooth: speed stays plausible, gyro disagrees)
 Dr = T.copy()

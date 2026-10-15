@@ -15,7 +15,7 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (â
 | S5 evaluator + shared builder | ready: coverage, speed, gyro windows (+ time offset, bias, convention check), gravity, revisit pairs (incl. start-end), sharpness, fuse, views, run comparison (17 regression checks) |
 | S6 Open3D O1/O2 | runner ready (README step 11), O1 verified end to end on the synthetic walk (38 min on 2 cores); engine isolated on Open3D 0.19.0 |
 | S8 final map + replay video | ready: `finish/finalize_map.py` (packaging, MANIFEST, optional guarded colour refinement), `finish/render_video.py`; floor tilt/flatness added to the fuser and comparison |
-| S1 ORB-SLAM3 (conditional) | Dockerfile, build/patch scripts, runner written (README 12b); native build test in progress |
+| S1 ORB-SLAM3 (conditional) | ready (README 12b): built natively here with the same scripts as the Dockerfile and verified end to end on the synthetic walk |
 | S7, S9 | after the walk1 results |
 
 ## Findings on the synthetic walk (979 frames, exact ground truth)
@@ -32,6 +32,11 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (â
   100-frame fragments join (frames 400, 500, 600) - caught by the gyro check and revisits without ground truth.
 - Floor check on a floor-viewing synthetic walk: tilt 0.35 deg (= the gravity estimate's error), flatness 3.3 mm.
 - Colour-map optimisation moved the cameras and made colours worse with exact poses (0.017 -> 0.121): opt-in only.
+- ORB-SLAM3 S1 on the synthetic walk: best so far (ATE 9.3 mm, gyro windows all <= 1 deg, revisits <= 0.7 cm,
+  sharpness 1.04) except ONE frame (884) that jumped 18.5 cm out and back during a loop closure. The 0.2 s speed window
+  and the 0.5 s gyro windows hid it, so the evaluator now also checks single-frame steps (translation and rotation vs
+  gyro) and lists outlier frames, which eval/fuse.py skips.
+- ORB-SLAM3 build: needs C++17 + an int fix (patch_orbslam3.sh); Optimizer.cc needs ~6 GB RAM+swap to compile.
 - A constant slow yaw drift looks like gyro bias to the gyro check; it is flagged as an implausible bias (> 1 deg/s)
   and measured properly by the revisit checks (next batch).
 

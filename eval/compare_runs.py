@@ -24,6 +24,7 @@ CHECKS = [
     ("posed", lambda m: m["coverage"]["fraction"], lambda v: v >= 1.0, "{:.1%}"),
     ("pieces", lambda m: m["coverage"]["pieces"], lambda v: v == 1, "{}"),
     ("speed>1.5", lambda m: m["speed"]["frames_over_limit"], lambda v: v == 0, "{}"),
+    ("jump frames", lambda m: len(m["outlier_frames"]), lambda v: v == 0, "{}"),
     ("gyro<=1deg", lambda m: m["gyro"]["frac_le_1deg"], lambda v: v >= 0.99, "{:.1%}"),
     ("gyro max", lambda m: m["gyro"]["err_max_deg"], lambda v: v <= 3.0, "{:.2f}°"),
     ("bias ok", lambda m: m["gyro"]["bias_plausible"], lambda v: bool(v), "{}"),

@@ -136,7 +136,12 @@ def main():
         attr_channels=((1), (1), (3)), voxel_size=a.voxel, block_resolution=8, block_count=20000, device=dev)
     K = o3d.core.Tensor(ds.K, o3d.core.float64)
     trunc_mult = a.trunc / a.voxel
-    idx = [i for i in range(0, len(ds), a.every) if m[i]]
+    outliers = set()
+    if os.path.isfile(mpath):
+        outliers = set(json.load(open(mpath)).get("outlier_frames", []))
+    idx = [i for i in range(0, len(ds), a.every) if m[i] and i not in outliers]
+    if outliers:
+        print(f"skipping {len(outliers)} outlier frames flagged by evaluate.py (single-frame jumps)")
     print(f"Fusing {len(idx)} frames (of {len(ds)}), voxel {a.voxel} m, trunc {a.trunc} m, depth <= {zmax:.2f} m")
     for n, i in enumerate(idx):
         z = edge_filter(ds.depth_m(i), k)
@@ -166,7 +171,7 @@ def main():
     info = {"T_map_from_traj": T_map.round(9).tolist(), "up_axis": "+z", "units": "m",
             "floor_at_z": 0.0, "floor_shift_m": -floor_z, "floor": floor, "first_camera_looks_along": "+x (horizontal projection)",
             "voxel_m": a.voxel, "trunc_m": a.trunc, "depth_max_m": zmax, "depth_noise_k": k,
-            "frames_fused": len(idx), "every": a.every, "pieces_removed": n_removed,
+            "frames_fused": len(idx), "every": a.every, "outlier_frames_skipped": len(outliers), "pieces_removed": n_removed,
             "mesh_vertices": len(mesh.vertices), "mesh_triangles": len(mesh.triangles), "cloud_points": len(cloud.points),
             "seconds": round(time.time() - t_start, 1), "warnings": warnings}
     with open(os.path.join(run, "map_frame.json"), "w") as fh:
