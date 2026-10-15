@@ -7,16 +7,12 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (�
 ## Status
 | Step | State |
 |---|---|
-| S0 machine facts | waiting for `setup/check_machine.sh` output (assumed: standard Ubuntu 22.04, Docker installable) |
-| S1 copy + protect bag | ready (README step 3) |
-| S2 inspect | code ready, tested on synthetic files |
-| S3 export + check | code ready, tested on synthetic files |
-| S4 RTAB-Map R1/R2 | runner ready (README steps 7–9); tested natively with RTAB-Map 0.24.2 on a synthetic walk with ground truth |
-| S5 evaluator + shared builder | ready: coverage, speed, gyro windows (+ time offset, bias, convention check), gravity, revisit pairs (incl. start-end), sharpness, fuse, views, run comparison (17 regression checks) |
-| S6 Open3D O1/O2 | runner ready (README step 11), O1 and O2 verified end to end on the synthetic walk (38 / 79 min on 2 cores); engine isolated on Open3D 0.19.0 |
-| S8 final map + replay video | ready: `finish/finalize_map.py` (packaging, MANIFEST, optional guarded colour refinement), `finish/render_video.py`; floor tilt/flatness added to the fuser and comparison |
-| S1 ORB-SLAM3 (conditional) | ready (README 12b): built natively here with the same scripts as the Dockerfile and verified end to end on the synthetic walk |
-| S7, S9 | after the walk1 results |
+| S0 machine facts | waiting for `setup/check_machine.sh` output |
+| whole pipeline | `run_all.sh`: bag -> export/check -> revisits -> engines -> comparison + recommendation -> final map + video; resumable. Tested end to end from a synthetic room walk recorded as a real `.db3` (exact ground truth): ORB-SLAM3 ATE 14 mm, RTAB-Map R1 18 mm / R2 12 mm, all revisits <= 1 cm |
+| engines | built natively by `setup/install_engines.sh` (RTAB-Map af1ced2 + g2o 20230806, ORB-SLAM3 4452a3c + Pangolin 0.9.2, Open3D 0.19.0 env); build and Python env verified on a clean Ubuntu 22.04 |
+| S1-S6, S8 | code ready and tested (details in git history and the findings below) |
+| S7 | `compare_runs.py --pick` proposes a run from the fixed targets; we confirm by looking at the views |
+| S9 | after walk1 |
 
 ## Findings on the synthetic walk (979 frames, exact ground truth)
 - RTAB-Map R1: ATE 9–10 mm (matches RTAB-Map's own figure), 100 % posed, map visually clean.
