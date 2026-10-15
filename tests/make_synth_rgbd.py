@@ -98,6 +98,9 @@ def path_point(s, total_inset=1.2, r=0.6):
     raise RuntimeError
 
 
+PITCH_DEG = -12.0
+
+
 def pose_at(t, T_total, speed, hold=1.5):
     """World-from-camera (optical) 4x4 at time t. Still for `hold` s at both ends, smooth ramps."""
     _, _, L = path_point(0.0)
@@ -107,7 +110,7 @@ def pose_at(t, T_total, speed, hold=1.5):
     xy, heading, _ = path_point(s)
     walk = np.sin(np.pi * u) ** 2          # smooth 0 -> 1 -> 0: no jumps when the walk starts/stops
     yaw = heading - np.deg2rad(35)                         # look toward the outer wall
-    pitch = np.deg2rad(-12 + 4 * np.sin(2 * np.pi * t / 7.0) * walk)
+    pitch = np.deg2rad(PITCH_DEG + 4 * np.sin(2 * np.pi * t / 7.0) * walk)
     roll = np.deg2rad(2 * np.sin(2 * np.pi * t / 5.0) * walk)
     z = 1.40 + 0.015 * np.sin(2 * np.pi * t / 1.1) * walk
     fwd = np.array([np.cos(yaw) * np.cos(pitch), np.sin(yaw) * np.cos(pitch), np.sin(pitch)])
@@ -131,7 +134,10 @@ def main():
     ap.add_argument("--speed", type=float, default=0.35, help="mean walking speed m/s")
     ap.add_argument("--seconds", type=float, default=None, help="default: one full loop")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--pitch", type=float, default=-12.0, help="camera pitch in degrees (negative = down)")
     a = ap.parse_args()
+    global PITCH_DEG
+    PITCH_DEG = a.pitch
     rng = np.random.default_rng(a.seed)
     os.makedirs(os.path.join(a.out, "rgb"), exist_ok=True)
     os.makedirs(os.path.join(a.out, "depth"), exist_ok=True)

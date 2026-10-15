@@ -33,6 +33,8 @@ CHECKS = [
     ("rev rot p90", lambda m: m["revisits"]["rot_p90_deg"], lambda v: v <= 1.5, "{:.2f}°"),
     ("start-end", lambda m: m["revisits"]["start_end"]["trans_m"], lambda v: v <= 0.05, "{:.3f} m"),
     ("sharpness", lambda m: m["sharpness"]["ratio"], lambda v: v <= 1.5, "{:.2f}"),
+    ("floor tilt", lambda m: m["map"]["floor"]["tilt_deg"], lambda v: v <= 1.0, "{:.2f}°"),
+    ("floor flat", lambda m: m["map"]["floor"]["flatness_rms_m"], lambda v: v <= 0.01, "{:.3f} m"),
     ("ATE (GT)", lambda m: m["groundtruth"]["ate_rmse_m"], None, "{:.4f} m"),
     ("runtime", lambda m: m["run_info"]["runtime_s"], None, "{} s"),
 ]
@@ -60,6 +62,9 @@ def main():
     runs = []
     for n in names:
         m = json.load(open(os.path.join(root, n, "metrics.json")))
+        mf = os.path.join(root, n, "map_frame.json")
+        if os.path.isfile(mf):
+            m["map"] = json.load(open(mf))
         if a.dataset and os.path.basename(m["dataset"].rstrip("/")) != a.dataset:
             continue
         runs.append((n, m))

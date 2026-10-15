@@ -57,6 +57,31 @@ def floor_height(mesh):
     return float(0.5 * (edges[i] + edges[i + 1]))
 
 
+def floor_check(mesh, voxel):
+    """Plane fit to the up-facing surface at floor level (map frame, floor at z=0): tilt against
+    gravity and flatness. A bent map or a wrong 'up' shows up here."""
+    v = np.asarray(mesh.vertices)
+    n = np.asarray(mesh.vertex_normals)
+    sel = (n[:, 2] > 0.9) & (np.abs(v[:, 2]) < 0.06)
+    area = float(sel.sum() * voxel ** 2 / 2.0)          # ~2 vertices per voxel^2 on a surface
+    if sel.sum() < 500:
+        return {"error": "too little floor seen", "floor_area_m2": area}
+    q = v[sel]
+    c = q.mean(0)
+    _, _, Vt = np.linalg.svd(q - c, full_matrices=False)
+    normal = Vt[2] if Vt[2, 2] > 0 else -Vt[2]
+    resid = (q - c) @ normal
+    # robust: refit on inliers within 3 cm
+    keep = np.abs(resid) < 0.03
+    c = q[keep].mean(0)
+    _, _, Vt = np.linalg.svd(q[keep] - c, full_matrices=False)
+    normal = Vt[2] if Vt[2, 2] > 0 else -Vt[2]
+    resid = (q[keep] - c) @ normal
+    return {"tilt_deg": float(np.degrees(np.arccos(np.clip(normal[2], -1, 1)))),
+            "flatness_rms_m": float(np.sqrt((resid ** 2).mean())), "floor_area_m2": area,
+            "extent_m": (q[keep].max(0) - q[keep].min(0))[:2].round(2).tolist()}
+
+
 def remove_small_pieces(mesh, min_area):
     if len(mesh.triangles) == 0:
         return mesh, 0
@@ -125,12 +150,13 @@ def main():
             print(f"  {n}/{len(idx)}", flush=True)
 
     mesh = vbg.extract_triangle_mesh().to_legacy()
-    floor = floor_height(mesh)
+    floor_z = floor_height(mesh)
     S = np.eye(4)
-    S[2, 3] = -floor
+    S[2, 3] = -floor_z
     mesh.transform(S)
     mesh, n_removed = remove_small_pieces(mesh, a.min_piece_m2)
     mesh.compute_vertex_normals()
+    floor = floor_check(mesh, a.voxel)
     cloud = vbg.extract_point_cloud().to_legacy().transform(S).voxel_down_sample(a.voxel)
     o3d.io.write_triangle_mesh(os.path.join(run, "map_mesh.ply"), mesh)
     o3d.io.write_point_cloud(os.path.join(run, "map_cloud.ply"), cloud)
@@ -138,7 +164,7 @@ def main():
     write_tum(os.path.join(run, "trajectory_map.tum"), ds.stamps[m], np.einsum("ij,njk->nik", T_map, poses[m]),
               header="timestamp tx ty tz qx qy qz qw  (colour optical frame in the map frame)")
     info = {"T_map_from_traj": T_map.round(9).tolist(), "up_axis": "+z", "units": "m",
-            "floor_at_z": 0.0, "floor_shift_m": -floor, "first_camera_looks_along": "+x (horizontal projection)",
+            "floor_at_z": 0.0, "floor_shift_m": -floor_z, "floor": floor, "first_camera_looks_along": "+x (horizontal projection)",
             "voxel_m": a.voxel, "trunc_m": a.trunc, "depth_max_m": zmax, "depth_noise_k": k,
             "frames_fused": len(idx), "every": a.every, "pieces_removed": n_removed,
             "mesh_vertices": len(mesh.vertices), "mesh_triangles": len(mesh.triangles), "cloud_points": len(cloud.points),
@@ -147,7 +173,12 @@ def main():
         json.dump(info, fh, indent=2)
     for wmsg in warnings:
         print("WARNING:", wmsg)
-    print(f"mesh {len(mesh.triangles)} triangles, cloud {len(cloud.points)} points, floor shift {-floor:+.3f} m, "
+    if "tilt_deg" in floor:
+        print(f"floor: tilt {floor['tilt_deg']:.2f} deg vs gravity, flatness {100 * floor['flatness_rms_m']:.2f} cm RMS, "
+              f"{floor['floor_area_m2']:.1f} m^2 seen")
+    else:
+        print("floor:", floor.get("error"))
+    print(f"mesh {len(mesh.triangles)} triangles, cloud {len(cloud.points)} points, floor shift {-floor_z:+.3f} m, "
           f"{info['seconds']} s -> {run}/map_mesh.ply, map_cloud.ply")
 
     from render_views import render  # noqa: E402  (same folder)

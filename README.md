@@ -139,6 +139,25 @@ python eval/compare_runs.py ~/mv2_data/runs --dataset walk1
 ```
 Paste the table it prints and send `~/mv2_data/runs/compare.png`.
 
+## Steps on the Z440 (batch 5): final map and replay video
+
+### 13. Final map from the winning run (after we pick it together)
+```bash
+python finish/finalize_map.py ~/mv2_data/datasets/walk1 ~/mv2_data/runs/<winning run> ~/mv2_data/final/walk1
+# optional, kept only if it measurably improves colours:
+#   add --colour-opt
+```
+`~/mv2_data/final/walk1/` then holds `map_mesh.ply` (full), `map_mesh_view.ply` (lighter), `map_cloud.ply`,
+`trajectory_map.tum`, `map_frame.json`, `metrics.json`, `views.png`, `MANIFEST.json` (provenance + sha256), `README.txt`.
+Frame: metres, +z up (gravity), floor at z = 0.
+
+### 14. Replay video (a few minutes)
+```bash
+python finish/render_video.py ~/mv2_data/datasets/walk1 ~/mv2_data/runs/<run>
+```
+Writes `<run>/replay.mp4`: camera image with features (red LOST banner when the engine had no pose) next to the
+map growing as it is seen, with the path and the current camera. `--step 2` halves the length.
+
 Single steps, if needed: `eval/convert_traj.py` (engine trajectory → project format), `eval/evaluate.py`
 (metrics), `eval/fuse.py` (shared map builder), `eval/render_views.py` (fixed views).
 

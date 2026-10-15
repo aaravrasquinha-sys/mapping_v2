@@ -14,7 +14,8 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (â
 | S4 RTAB-Map R1/R2 | runner ready (README steps 7â€“9); tested natively with RTAB-Map 0.24.2 on a synthetic walk with ground truth |
 | S5 evaluator + shared builder | ready: coverage, speed, gyro windows (+ time offset, bias, convention check), gravity, revisit pairs (incl. start-end), sharpness, fuse, views, run comparison (17 regression checks) |
 | S6 Open3D O1/O2 | runner ready (README step 11), O1 verified end to end on the synthetic walk (38 min on 2 cores); engine isolated on Open3D 0.19.0 |
-| S7â€“S9 | after the walk1 results |
+| S8 final map + replay video | ready: `finish/finalize_map.py` (packaging, MANIFEST, optional guarded colour refinement), `finish/render_video.py`; floor tilt/flatness added to the fuser and comparison |
+| S7, S9 | after the walk1 results |
 
 ## Findings on the synthetic walk (979 frames, exact ground truth)
 - RTAB-Map R1: ATE 9â€“10 mm (matches RTAB-Map's own figure), 100 % posed, map visually clean.
@@ -28,6 +29,8 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (â
 - R2 vs R1: tighter loop consistency (revisit rotation 0.07 vs 0.47 deg) but worse local smoothness (gyro max 4.6 deg).
 - Open3D O1 on the synthetic walk: ATE 6.9 cm (RTAB-Map ~1 cm); rotation jumps up to 11 deg exactly where its
   100-frame fragments join (frames 400, 500, 600) - caught by the gyro check and revisits without ground truth.
+- Floor check on a floor-viewing synthetic walk: tilt 0.35 deg (= the gravity estimate's error), flatness 3.3 mm.
+- Colour-map optimisation moved the cameras and made colours worse with exact poses (0.017 -> 0.121): opt-in only.
 - A constant slow yaw drift looks like gyro bias to the gyro check; it is flagged as an implausible bias (> 1 deg/s)
   and measured properly by the revisit checks (next batch).
 
