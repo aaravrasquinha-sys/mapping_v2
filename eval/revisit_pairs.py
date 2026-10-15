@@ -39,7 +39,7 @@ N_FEAT = 1000
 MIN_MATCHES, MIN_INLIERS, MIN_INLIER_RATIO = 40, 30, 0.3
 ICP_FITNESS, ICP_RMSE = 0.3, 0.012          # at 1.5 cm on 1 cm clouds
 MIN_NORMAL_SPREAD = 0.05                    # reject overlaps that are one plane or a crease
-MAX_ICP_CHANGE_T, MAX_ICP_CHANGE_R = 0.10, 5.0
+MAX_ICP_CHANGE_T, MAX_ICP_CHANGE_R = 0.03, 2.0  # PnP and ICP must agree (larger = one of them is off)
 TRIES_PER_CELL = 3                          # appearance hits verified per (bin_i, bin_j) cell at most
 
 
