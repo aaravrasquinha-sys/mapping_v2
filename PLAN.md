@@ -12,14 +12,20 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (�
 | S2 inspect | code ready, tested on synthetic files |
 | S3 export + check | code ready, tested on synthetic files |
 | S4 RTAB-Map R1/R2 | runner ready (README steps 7–9); tested natively with RTAB-Map 0.24.2 on a synthetic walk with ground truth |
-| S5 evaluator + shared builder | part 1 ready: coverage, speed, gyro windows (+ time offset, bias, convention check), gravity, fuse, views. Part 2 (revisit pairs, sharpness, first-vs-last) next |
-| S6–S9 | next batches |
+| S5 evaluator + shared builder | ready: coverage, speed, gyro windows (+ time offset, bias, convention check), gravity, revisit pairs (incl. start-end), sharpness, fuse, views, run comparison (17 regression checks) |
+| S6 Open3D O1/O2 | runner written (README step 11), end-to-end test on the synthetic walk still running; engine isolated on Open3D 0.19.0 |
+| S7–S9 | after the walk1 results |
 
 ## Findings on the synthetic walk (979 frames, exact ground truth)
 - RTAB-Map R1: ATE 9–10 mm (matches RTAB-Map's own figure), 100 % posed, map visually clean.
   Runs differ slightly (9.0 vs 10.2 mm): RTAB-Map is not bit-deterministic -> the run-twice rule is needed.
 - R2 (exhaustive loop search + global BA) was NOT better locally: gyro windows max 4.6 deg vs 1.3 deg for R1.
 - Open3D 0.20.0 (`open3d-cpu`): legacy ScalableTSDFVolume fuses nothing; the builder uses the tensor VoxelBlockGrid.
+- Open3D 0.20.0 legacy ScalableTSDFVolume fuses nothing in BOTH open3d and open3d-cpu (0.19.0 works): the Open3D
+  reconstruction engine therefore runs in its own env on 0.19.0 (scripts from tag v0.19.0).
+- Revisit pairs: point-to-plane ICP slid along walls (errors up to 45 mm); colour-assisted ICP from the PnP pose
+  gives <= 5 mm / 0.05 deg vs ground truth. Overlaps that are a single plane or crease are rejected.
+- R2 vs R1: tighter loop consistency (revisit rotation 0.07 vs 0.47 deg) but worse local smoothness (gyro max 4.6 deg).
 - A constant slow yaw drift looks like gyro bias to the gyro check; it is flagged as an implausible bias (> 1 deg/s)
   and measured properly by the revisit checks (next batch).
 

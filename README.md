@@ -109,6 +109,36 @@ Paste the summary blocks (from `coverage:` to `gravity:`) and `cat ~/mv2_data/ru
 python -c "import open3d as o3d, sys; o3d.visualization.draw_geometries([o3d.io.read_triangle_mesh(sys.argv[1])])" ~/mv2_data/runs/<run>/map_mesh.ply
 ```
 
+## Steps on the Z440 (batch 4): revisit checks, Open3D, comparison
+
+### 10. Revisit pairs: once per dataset (estimated 10–20 min)
+```bash
+cd ~/mv2 && git pull && source ~/venvs/mv2/bin/activate
+python eval/revisit_pairs.py ~/mv2_data/datasets/walk1 ~/mv2_data/runs/_cache/walk1/revisit_pairs.json
+```
+Finds places the walk sees again ≥ 20 s later (by appearance, not by any trajectory) and measures
+their relative pose directly (features + colour-assisted ICP). On a synthetic walk with exact ground truth
+the accepted pairs were within 5 mm / 0.05°. Paste the last line (number of pairs, start-end pairs).
+
+Then re-score the RTAB-Map runs so they include revisits and sharpness:
+```bash
+for r in ~/mv2_data/runs/*_rtabmap_R*; do case "$r" in *smoke*) continue;; esac; python eval/evaluate.py ~/mv2_data/datasets/walk1 "$r"; done
+```
+
+### 11. Open3D reconstruction system (setup once, then O1 and O2; each estimated 1–3 h on CPU)
+```bash
+bash engines/open3d_recon/setup_open3d.sh        # isolated env with Open3D 0.19.0 (0.20.0 has a TSDF bug)
+bash engines/open3d_recon/run_open3d.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --max-frames 300 --no-fuse   # smoke test
+bash engines/open3d_recon/run_open3d.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs            # O1
+bash engines/open3d_recon/run_open3d.sh ~/mv2_data/datasets/walk1 ~/mv2_data/runs --slac     # O2
+```
+
+### 12. Compare all runs
+```bash
+python eval/compare_runs.py ~/mv2_data/runs --dataset walk1
+```
+Paste the table it prints and send `~/mv2_data/runs/compare.png`.
+
 Single steps, if needed: `eval/convert_traj.py` (engine trajectory → project format), `eval/evaluate.py`
 (metrics), `eval/fuse.py` (shared map builder), `eval/render_views.py` (fixed views).
 
