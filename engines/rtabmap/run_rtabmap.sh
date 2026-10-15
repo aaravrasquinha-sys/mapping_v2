@@ -3,9 +3,10 @@
 #
 #   R1 = rtabmap-rgbd_dataset with the tool's documented example settings
 #        (DetectionRate 2, LinearUpdate 0, AngularUpdate 0, STMSize 30) + intermediate nodes
-#        (a pose for every frame). Trajectory: <run>/rtabmap_poses.txt (all frames).
+#        (a pose for every frame) + Odom/ResetCountdown 1 (restart odometry after a tracking loss; the
+#        sessions are joined by loop closures). Trajectory: rtabmap-export --opt 0 (all nodes).
 #   R2 = R1 database + rtabmap-detectMoreLoopClosures + rtabmap-globalBundleAdjustment,
-#        trajectory from rtabmap-export --poses_camera (all frames).
+#        trajectory from rtabmap-export --poses_camera --opt 2 (the bundle-adjusted poses, all frames).
 #
 # The dataset needs rtabmap_calib.yaml (written by the exporter): rtabmap-rgbd_dataset prints
 # "Dataset ... is not supported" for any non-TUM name and then loads that file. Expected.
@@ -89,7 +90,7 @@ if [ "$MAXF" -gt 0 ]; then
 fi
 
 PARAMS=(--Rtabmap/DetectionRate 2 --RGBD/LinearUpdate 0 --RGBD/AngularUpdate 0 --Mem/STMSize 30
-        --Rtabmap/CreateIntermediateNodes true)
+        --Rtabmap/CreateIntermediateNodes true --Odom/ResetCountdown 1)
 
 # ---- R1
 echo "R1: rtabmap-rgbd_dataset ... (log: $RUN1/rtabmap.log)"
@@ -97,8 +98,16 @@ T0=$(date +%s)
 rt rtabmap-rgbd_dataset --output "$RUN1" --quiet "${PARAMS[@]}" "$INPUT" > "$RUN1/rtabmap.log" 2>&1 || true
 T1=$(date +%s)
 grep -q "Camera init failed" "$RUN1/rtabmap.log" && { echo "ERROR: RTAB-Map could not read the dataset/calibration (see rtabmap.log)"; exit 1; }
-[ -s "$RUN1/rtabmap_poses.txt" ] || { echo "ERROR: no trajectory written (see $RUN1/rtabmap.log)"; tail -20 "$RUN1/rtabmap.log"; exit 1; }
+[ -s "$RUN1/rtabmap.db" ] || { echo "ERROR: no database written (see $RUN1/rtabmap.log)"; tail -20 "$RUN1/rtabmap.log"; exit 1; }
+# trajectory: full global optimisation of every node (incl. intermediate ones) from the database.
+# (rgbd_dataset's own rtabmap_poses.txt is not written when frames were lost: "stamps and poses maps
+#  should have the same size"; after an odometry reset the sessions are joined by loop closures)
+rt rtabmap-export --poses_camera --poses_format 10 --opt 0 --output_dir "$RUN1" --output r1 "$RUN1/rtabmap.db" \
+  > "$RUN1/export.log" 2>&1 || true
+[ -s "$RUN1/r1_camera_poses.txt" ] || { echo "ERROR: no trajectory exported (see $RUN1/export.log, rtabmap.log)"; tail -5 "$RUN1/export.log"; exit 1; }
 rt rtabmap-info "$RUN1/rtabmap.db" > "$RUN1/rtabmap_info.txt" 2>&1 || true
+grep -E "^(Sessions|Maps in graph|Optimized graph|Global graph):" "$RUN1/rtabmap_info.txt" | sed 's/^/  /' || true
+echo "  (more than 1 session = odometry was lost and restarted; 'Maps in graph' lists the sessions joined into the map)"
 
 write_runjson() {  # dir variant seconds params...
   local dir="$1" variant="$2" secs="$3"; shift 3
@@ -118,7 +127,7 @@ finish() {  # run_dir engine_traj
   python "$REPO/eval/evaluate.py" "$DS" "$1"
   if [ "$FUSE" -eq 1 ]; then python "$REPO/eval/fuse.py" "$DS" "$1"; fi
 }
-finish "$RUN1" "$RUN1/rtabmap_poses.txt"
+finish "$RUN1" "$RUN1/r1_camera_poses.txt"
 
 # ---- R2
 if [ "$R2" -eq 1 ]; then
