@@ -149,7 +149,10 @@ def main():
             s["metadata_messages"] = len(stamps)
             s["timestamp_domain"] = sorted(domains)
             if stamps:
-                st = sorted(stamps)
+                st_all = sorted(stamps)
+                mid = st_all[len(st_all) // 2]
+                st = [t for t in st_all if abs(t - mid) <= 8.64e7]      # a sample more than a day from the rest is a bad stamp
+                s["timestamp_outliers"] = len(st_all) - len(st)
                 dts = sorted(b - c for b, c in zip(st[1:], st[:-1]))
                 dur = (st[-1] - st[0]) / 1000.0
                 s["device_time_ms"] = {"first": st[0], "last": st[-1]}
@@ -195,6 +198,10 @@ def main():
             v.append(f"{label} ({key}): {s.get('data_messages', 0)} samples, {r} Hz"
                      + (f", {per_frame:.1f} per colour frame -> {'FULL RATE' if full else 'THINNED (about 1 per frame)'}"
                         if per_frame else ""))
+    for key, s_ in report["streams"].items():
+        if s_.get("timestamp_outliers"):
+            v.append(f"WARNING {key}: {s_['timestamp_outliers']} sample(s) with a timestamp more than a day away from "
+                     "the rest of the stream (ignored for rates; the exporter drops them)")
     if not gyro or not accel:
         v.append("IMU: MISSING (no gyro and/or accel stream in file)")
     else:

@@ -46,6 +46,7 @@ import yaml
 
 TUM_UNITS_PER_M = 5000
 TUM_MAX_RAW = 65535
+IMU_MARGIN_MS = 30000.0      # IMU samples further than this outside the colour frames are dropped (bad stamps)
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -419,6 +420,17 @@ class Exporter:
         # IMU
         gyro = sorted(self.gyro)
         accel = sorted(self.accel)
+        # IMU samples with a bad device time (a real recording had one accel sample stamped near 0 while the
+        # rest were at 1.79e12 ms) are dropped: they would be interpolated across in imu.csv.
+        # Window: the colour time range +/- IMU_MARGIN_MS. check_export.py recounts this from the bag.
+        imu_dropped = {"gyro": 0, "accel": 0}
+        if rows:
+            lo = float(rows[0]["t_colour_s"]) * 1000.0 - IMU_MARGIN_MS
+            hi = float(rows[-1]["t_colour_s"]) * 1000.0 + IMU_MARGIN_MS
+            g_all, a_all = len(gyro), len(accel)
+            gyro = [g for g in gyro if lo <= g[0] <= hi]
+            accel = [a for a in accel if lo <= a[0] <= hi]
+            imu_dropped = {"gyro": g_all - len(gyro), "accel": a_all - len(accel)}
         for fname, data in (("imu_gyro.csv", gyro), ("imu_accel.csv", accel)):
             with open(os.path.join(out, fname), "w") as fh:
                 fh.write("t_s,frame_number,x,y,z\n")
@@ -453,6 +465,9 @@ class Exporter:
                             "engine calibration files use zero distortion")
         if dup_names:
             warnings.append(f"{dup_names} duplicate colour timestamps")
+        for k, n in imu_dropped.items():
+            if n:
+                warnings.append(f"{n} {k} sample(s) dropped: device time more than {IMU_MARGIN_MS / 1000:.0f} s outside the colour frames")
 
         dts = np.array([float(r["dt_depth_minus_colour_ms"]) for r in paired]) if paired else np.array([0.0])
         meta = {
@@ -472,6 +487,8 @@ class Exporter:
             "dt_depth_minus_colour_ms": {"median": float(np.median(dts)), "max_abs": float(np.abs(dts).max())},
             "pairing_threshold_ms": self.half_period_ms,
             "gyro_samples": len(gyro), "accel_samples": len(accel), "imu_csv_rows": n_combined,
+            "imu_margin_ms": IMU_MARGIN_MS, "gyro_dropped_out_of_range": imu_dropped["gyro"],
+            "accel_dropped_out_of_range": imu_dropped["accel"],
             "warnings": warnings,
         }
         with open(os.path.join(out, "meta.json"), "w") as fh:

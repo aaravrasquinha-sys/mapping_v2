@@ -23,6 +23,16 @@ grep -q "colour_frames_written: 87" "$T/export.log" && grep -q "colour_frames_no
   && ok "export: exact counts" || bad "export counts (see $T/export.log)"
 python bagtools/check_export.py "$T/synth.db3" "$T/ex" > "$T/check.log" 2>&1 && ok "check_export: PASS" || bad "check_export (see $T/check.log)"
 
+# a recording with one accel sample stamped near 0 (as in the real walk1.db3): inspect must not report 0 Hz,
+# the exporter must drop it, and the independent check must still pass
+python tests/make_synth_db3.py "$T/badimu.db3" --frames 60 --bad-imu-stamp >/dev/null || bad "make bad-IMU-stamp recording"
+out2=$(python bagtools/inspect_db3.py "$T/badimu.db3" --out "$T/inspect_bad.json")
+echo "$out2" | grep -q "IMU full rate: YES" && echo "$out2" | grep -q "WARNING.*1 sample(s) with a timestamp" \
+  && ok "inspect: bad IMU stamp flagged, rate still correct" || bad "inspect: bad IMU stamp"
+python bagtools/export_db3.py "$T/badimu.db3" "$T/ex_bad" > "$T/export_bad.log" 2>&1 || bad "export (bad IMU stamp) ran"
+python bagtools/check_export.py "$T/badimu.db3" "$T/ex_bad" > "$T/check_bad.log" 2>&1 \
+  && grep -q "dropped 1" "$T/check_bad.log" && ok "export drops the bad IMU stamp; check_export: PASS" || bad "bad IMU stamp (see $T/check_bad.log)"
+
 python bagtools/export_db3.py "$T/step.db3" "$T/ex_step" > /dev/null 2>&1
 python - "$T/ex_step" <<'EOF' && ok "alignment direction (1 m edge at colour column 329)" || bad "alignment direction"
 import sys, glob, cv2

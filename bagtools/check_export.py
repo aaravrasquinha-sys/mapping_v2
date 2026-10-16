@@ -72,8 +72,12 @@ def main():
     src_c = [round(t, 3) for t in c_ms]
     if limited:
         src_c = src_c[: meta["max_frames"]]
-    check("colour frames: export == file", exp_c == src_c,
-          f"file {len(src_c)}, frames.csv {len(exp_c)}" + (" (limited run)" if limited else ""))
+    # frames.csv stores seconds with 6 decimals (0.001 ms), so compare to that resolution, not bit for bit
+    same_n = len(exp_c) == len(src_c)
+    max_diff = float(np.max(np.abs(np.array(exp_c) - np.array(src_c)))) if same_n and exp_c else float("nan")
+    check("colour frames: export == file", same_n and max_diff <= 0.0015,
+          f"file {len(src_c)}, frames.csv {len(exp_c)}, largest time difference {max_diff:.4f} ms"
+          + (" (limited run)" if limited else ""))
 
     # 2. timestamps / names
     ts = [float(r["t_colour_s"]) for r in rows]
@@ -129,10 +133,13 @@ def main():
 
     # 5. IMU
     if not limited:
-        check("gyro samples: export == file", meta["gyro_samples"] == len(g_ms),
-              f"file {len(g_ms)}, export {meta['gyro_samples']}")
-        check("accel samples: export == file", meta["accel_samples"] == len(acc_ms),
-              f"file {len(acc_ms)}, export {meta['accel_samples']}")
+        margin = float(meta.get("imu_margin_ms", 30000.0))
+        lo, hi = src_c[0] - margin, src_c[-1] + margin
+        for nm, st, key in (("gyro", g_ms, "gyro_samples"), ("accel", acc_ms, "accel_samples")):
+            expect = sum(1 for t in st if lo <= t <= hi)
+            check(f"{nm} samples: export == file", meta[key] == expect,
+                  f"file {len(st)}, inside the colour time range {expect}, export {meta[key]}, "
+                  f"dropped {len(st) - meta[key]}")
     for fname in ("imu_gyro.csv", "imu_accel.csv"):
         t = np.loadtxt(os.path.join(ds, fname), delimiter=",", skiprows=1, usecols=0, ndmin=1)
         check(f"{fname} times non-decreasing", t.size == 0 or bool(np.all(np.diff(t) >= 0)), f"{t.size} rows")

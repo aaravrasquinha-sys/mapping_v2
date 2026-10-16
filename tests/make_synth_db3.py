@@ -56,6 +56,8 @@ def main():
     ap.add_argument("--frames", type=int, default=90)
     ap.add_argument("--step", action="store_true",
                     help="depth = 1 m left half, 2 m right half (checks alignment direction)")
+    ap.add_argument("--bad-imu-stamp", action="store_true",
+                    help="add one accel sample stamped near 0 ms (seen in a real recording; the exporter must drop it)")
     a = ap.parse_args()
     if os.path.exists(a.out):
         os.remove(a.out)
@@ -105,7 +107,7 @@ def main():
     for s in sensors:
         s.start(lambda f: None)
 
-    t0 = 1792054584000.0  # ms, epoch-like (global time)
+    t0 = 1792054584000.3655  # ms, epoch-like (global time); 4 decimals like the real SDK stamps
     period = 1000.0 / FPS
     depth_buf = np.full((H, W), DEPTH_MM, np.uint16)
     if a.step:
@@ -136,8 +138,10 @@ def main():
         m.profile = prof.as_motion_stream_profile()
         s_mot.on_motion_frame(m)
 
+    if a.bad_imu_stamp:
+        motion(ap_, 5.0, 999999, (0.1, -9.81, 0.2))
     for k in range(a.frames):
-        tc = t0 + k * period
+        tc = round(t0 + k * period, 4)       # real stamps carry 4 decimals; round-half cases must not break the check
         # IMU samples covering [tc, tc + period)
         while t0 + n_gyro * 1000.0 / GYRO_HZ < tc + period:
             tg = t0 + n_gyro * 1000.0 / GYRO_HZ
