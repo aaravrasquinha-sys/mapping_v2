@@ -7,6 +7,9 @@ the comparison, and the final packaging. See [PLAN.md](PLAN.md) for the plan, ta
 
 Nothing here imports or modifies `spatial_tracking_system_v1.0` or `pyslam`.
 
+**Deploying on the Z440 from scratch: follow [RUNBOOK.md](RUNBOOK.md)** (bag copy from the Jetson, install, smoke
+test, real run, what to send back). The sections below are the reference.
+
 ## Quick start on the Z440 (Ubuntu 22.04)
 
 Each block is copy-paste. Paths assume the repo is cloned to `~/mv2`.
@@ -29,7 +32,7 @@ Everything goes into `~/mv2_tools` (and `~/venvs/o3d019`); no Docker needed.
 If the ORB-SLAM3 compiler gets killed (not enough RAM), add swap and re-run:
 `sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
 
-### 3. Python environment and self-test (about 5 min, ~2 GB)
+### 3. Python environment and self-test (about 5 min, ~2 GB; afterwards `bash setup/verify_install.sh` checks everything)
 ```bash
 bash setup/make_venv.sh                # creates ~/venvs/mv2
 source ~/venvs/mv2/bin/activate
