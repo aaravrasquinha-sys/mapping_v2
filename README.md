@@ -53,7 +53,7 @@ bash run_all.sh ~/mv2_data/bags/walk1.db3 --smoke 300 --engines "rtabmap orbslam
 It ends by printing a summary (`~/mv2_data/runs/SUMMARY_walk1_smoke300.txt`). Paste it.
 Ten seconds of walking cannot have revisits, so `n/a` there is expected.
 
-### 6. The real run (estimated 1-4 h; Open3D is the slow part)
+### 6. The real run (estimated 2-5 h; Open3D is the slow part)
 ```bash
 bash run_all.sh ~/mv2_data/bags/walk1.db3
 ```
@@ -70,6 +70,9 @@ command again):
 5. Open3D O1 (1-3 h), then the comparison again; the final map is rebuilt only if the pick changes
 
 `--slac` adds Open3D O2 (another 2-6 h). `--engines "rtabmap orbslam3"` skips Open3D.
+Measured on a 240 s synthetic walk with only 2 cores: revisit pairs 23 min, RTAB-Map R1+R2 64 min, ORB-SLAM3
+28 min (each including evaluation and map building); the Z440 should be faster. The provisional final map
+after step 4 is usually what you want to look at first.
 
 Send back: the printed summary (also in `~/mv2_data/runs/SUMMARY_walk1.txt`),
 `~/mv2_data/runs/compare_walk1.png` and `~/mv2_data/final/walk1/views.png`.

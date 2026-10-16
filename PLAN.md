@@ -33,6 +33,11 @@ write our own code only where proven tools fall short. Benchmark: `walk1.db3` (â
   and the 0.5 s gyro windows hid it, so the evaluator now also checks single-frame steps (translation and rotation vs
   gyro) and lists outlier frames, which eval/fuse.py skips.
 - ORB-SLAM3 build: needs C++17 + an int fix (patch_orbslam3.sh); Optimizer.cc needs ~6 GB RAM+swap to compile.
+- Full length (240 s, 7201 frames, 8 loops of the synthetic room; 2 cores): revisit pairs 23 min (216 pairs,
+  max 8.8 mm vs ground truth), RTAB-Map R1+R2 incl. evaluation and fusion 64 min, ORB-SLAM3 28 min, final map
+  12 s, replay video 1 min; peak RAM < 2 GB per step. R1 drifted (ATE 65 mm, revisits 16 cm / 4.6 deg,
+  start-end 16.5 cm) while R2 (3.5 mm) and ORB-SLAM3 (7.6 mm) met every target: the evaluator caught R1 without
+  ground truth and the recommendation picked R2, the most accurate run.
 - Tracking loss (60 blank frames in the walk): RTAB-Map with the documented settings never recovered (41 % posed);
   with Odom/ResetCountdown 1 the sessions were rejoined by loop closures (all non-blank frames posed, ATE 13 mm).
   ORB-SLAM3 started a new map and merged it; its TUM saver mixes unmerged maps' coordinates, so the runner uses the
