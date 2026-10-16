@@ -8,19 +8,20 @@
 #
 # Usage:
 #   bash run_all.sh BAG.db3 [--name NAME] [--data DIR] [--engines "rtabmap orbslam3 open3d"] [--slac]
-#                   [--smoke N] [--no-video]
+#                   [--smoke N] [--no-video] [--revisit-minutes N]
 #   --name      dataset name (default: bag file name without .db3, e.g. walk1)
 #   --data      data folder (default ~/mv2_data): datasets/, runs/, final/, logs/
 #   --engines   which engines to run (default: all three; Open3D is the slow one, 1-3 h)
 #   --slac      also run Open3D O2 (SLAC; roughly twice O1's time)
 #   --smoke N   quick machine test on the first N frames (dataset NAME_smokeN; everything else identical)
 #   --no-video  skip the replay video
+#   --revisit-minutes N  time limit of the revisit search (default 40; fewer minutes = fewer pairs found)
 #
 # Needs: setup/make_venv.sh and setup/install_engines.sh done once.
 # Results: DATA/final/NAME/ (the map), DATA/runs/compare_NAME.md/.png, DATA/runs/SUMMARY_NAME.txt
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
-BAG="" NAME="" DATA="$HOME/mv2_data" ENGINES="rtabmap orbslam3 open3d" SLAC=0 SMOKE=0 VIDEO=1
+BAG="" NAME="" DATA="$HOME/mv2_data" ENGINES="rtabmap orbslam3 open3d" SLAC=0 SMOKE=0 VIDEO=1 REVISIT_MIN=40
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="$2"; shift ;;
@@ -29,7 +30,8 @@ while [ $# -gt 0 ]; do
     --slac) SLAC=1 ;;
     --smoke) SMOKE="$2"; shift ;;
     --no-video) VIDEO=0 ;;
-    -h|--help) sed -n 2,22p "$0"; exit 0 ;;
+    --revisit-minutes) REVISIT_MIN="$2"; shift ;;
+    -h|--help) sed -n 2,23p "$0"; exit 0 ;;
     *) [ -z "$BAG" ] && BAG="$1" || { echo "unknown argument $1"; exit 1; } ;;
   esac
   shift
@@ -113,7 +115,7 @@ fi
 PAIRS="$RUNS/_cache/$NAME/revisit_pairs.json"
 if [ -f "$PAIRS" ]; then STATUS+=("skip   revisit pairs (exist)")
 else mkdir -p "$(dirname "$PAIRS")"
-     step "revisit pairs" "$LOGS/3_revisits.log" python "$REPO/eval/revisit_pairs.py" "$DS" "$PAIRS" || true
+     step "revisit pairs" "$LOGS/3_revisits.log" python "$REPO/eval/revisit_pairs.py" "$DS" "$PAIRS" --max-minutes "$REVISIT_MIN" || true
 fi
 
 compare_and_finish() {  # label
