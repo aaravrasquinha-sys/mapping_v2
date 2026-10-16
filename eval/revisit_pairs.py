@@ -154,7 +154,7 @@ def _verify_job(ij):
     i, j = ij
     cv2.setRNGSeed(int(i) * 100003 + int(j))           # same result whatever worker runs it
     clouds = _G.setdefault("clouds", {})
-    if len(clouds) > 200:
+    if len(clouds) > 60:                                # bounded memory per worker
         clouds.clear()
     return i, j, verify(_G["ds"], _G["feats"][i], _G["feats"][j], i, j, cv2.BFMatcher(cv2.NORM_HAMMING), clouds)
 
@@ -167,12 +167,13 @@ def main():
     ap.add_argument("--min-gap-s", type=float, default=20.0)
     ap.add_argument("--max-pairs", type=int, default=400)
     ap.add_argument("--bin-s", type=float, default=5.0, help="keep the best pair per (bin_i, bin_j) cell")
-    ap.add_argument("--jobs", type=int, default=0, help="parallel workers (default: CPU count, at most 12)")
+    ap.add_argument("--jobs", type=int, default=0, help="parallel workers (default: CPU count, at most 12, one per 2 GB of RAM)")
     ap.add_argument("--max-minutes", type=float, default=40.0,
                     help="no new verification round after this (rounds go from best to weaker hits)")
     a = ap.parse_args()
     t_start = time.time()
-    jobs = a.jobs or min(12, os.cpu_count() or 1)
+    ram_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2 ** 30
+    jobs = a.jobs or max(1, min(12, os.cpu_count() or 1, int(ram_gb / 2)))      # about 2 GB of RAM per worker
     ds = Dataset(a.dataset)
     fps = 1.0 / np.median(np.diff(ds.stamps))
     step = max(1, int(round(fps / a.rate_hz)))

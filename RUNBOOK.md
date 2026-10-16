@@ -1,6 +1,6 @@
 # RUNBOOK: deploy mapping_v2 on the HP Z440 and map walk1 (from scratch)
 
-Machine: HP Z440 (`slam@slam`), Ubuntu 22.04.3. The recording (`walk1.db3`, about 8 GB, 240 s) is still
+Machine: HP Z440 (`slam@slam`), Ubuntu 22.04.3. The recording (`walk1.db3`, 11.2 GB, 240 s) is still
 on the Jetson (`drdo@192.168.1.101`, `~/bags/walk1.db3`). This runbook gets from "empty Z440" to
 "map + comparison + video" and tells you exactly what to send back.
 
@@ -30,7 +30,7 @@ sudo apt update && sudo apt install -y git tmux rsync
 export JETSON=drdo@192.168.1.101        # change if the Jetson's address is different
 [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519    # only if you have no ssh key yet (no questions asked)
 ssh-copy-id $JETSON                     # one-time: no more password prompts for ssh/rsync
-ssh $JETSON 'ls -l ~/bags/walk1.db3; df -h ~ | tail -1'    # must show the bag, about 8 GB
+ssh $JETSON 'ls -l ~/bags/walk1.db3; df -h ~ | tail -1'    # must show the bag, 11177476096 bytes
 tmux new -s mv2                         # everything below runs in here
 #   detach: Ctrl-b then d      come back: tmux attach -t mv2
 ```
@@ -48,7 +48,20 @@ bash setup/check_machine.sh        # paste this output to me
 
 Later updates: `cd ~/mv2 && git pull` (never edit files in `~/mv2` by hand; if I send a patch, `git pull` applies it).
 
-## 2. Install the engines (30-90 min, mostly compiling; start this first, copy the bag at the same time)
+## 2a. Add swap first (2 min; this Z440 has only 3.7 GB of RAM, the compilers need more)
+
+The machine check showed 3.7 GB RAM. Swap is slow memory on the disk; it lets the compilers and the engines finish
+instead of being killed. The install script refuses to start without it. Do it once:
+```bash
+sudo fallocate -l 16G /swapfile_mv2 && sudo chmod 600 /swapfile_mv2 && sudo mkswap /swapfile_mv2 && sudo swapon /swapfile_mv2
+echo '/swapfile_mv2 none swap sw 0 0' | sudo tee -a /etc/fstab      # keep it after a reboot
+free -h                                                            # Swap: should show 16Gi
+```
+Close the browser and other desktop programs before the long steps (they were using 2.6 GB). If you can add RAM to
+16 GB or more (the Z440 takes DDR4 ECC modules), everything gets faster and the swap is only a safety net; it is not
+required.
+
+## 2. Install the engines (1.5-3 h on this machine: one compiler at a time; start it first, copy the bag meanwhile)
 
 Open a second tmux window (`Ctrl-b c`) for step 3 so both run together.
 
@@ -72,7 +85,7 @@ bash tests/run_bagtools_tests.sh          # must end with: ALL TESTS PASSED
 ```
 If `make_venv.sh` says it cannot create a venv: `sudo apt install -y python3.10-venv`, then run it again.
 
-## 3. Copy the bag from the Jetson (about 8 GB; 2-15 min on a wired LAN, longer over Wi-Fi)
+## 3. Copy the bag from the Jetson (11.2 GB; 3-20 min on a wired LAN, longer over Wi-Fi)
 
 Do this in the second tmux window while step 2 compiles.
 
@@ -197,25 +210,27 @@ camera path is `trajectory_map.tum`, provenance and checksums are `MANIFEST.json
 | `export check ... RESULT: FAIL` | The export differs from the bag. Do not continue. Send me `~/mv2_data/logs/walk1/2_check.log`. To redo: `chmod -R u+w ~/mv2_data/datasets/walk1 && rm -rf ~/mv2_data/datasets/walk1`, then run again. |
 | `FAILED RTAB-Map ...` or another engine | The other engines still ran. Send me the log named on the line. Delete that run's folder in `~/mv2_data/runs/` if it exists, then run the same command again. |
 | Z440 rebooted or the terminal was closed (no tmux) | Nothing finished is lost. Open a new `tmux`, `cd ~/mv2 && source ~/venvs/mv2/bin/activate`, run the same `run_all.sh` command; it skips what is done. |
-| Disk full | `df -h ~`. The bag copy (8 GB) can be deleted only after the export passed AND the Jetson copy is still there; the dataset is ~8 GB. |
+| Something says `Killed` or the machine freezes | Out of memory: check `free -h` (Swap must show 16Gi), close other programs, run the same command again. |
+| Disk full | `df -h ~`. The bag copy (11 GB) can be deleted only after the export passed AND the Jetson copy is still there; the dataset is ~10 GB. |
 | Everything has `n/a` in the revisit rows | The walk has no place seen twice 20 s apart. Say so and we use the other checks. |
 | Window closed / SSH dropped | `tmux attach -t mv2`. Jobs kept running. |
 
 Start completely over (keeps the bag): `chmod -R u+w ~/mv2_data/datasets; rm -rf ~/mv2_data/{datasets,runs,final,logs}`.
 Re-do one engine only: delete its folder in `~/mv2_data/runs/` and run the same `run_all.sh` command.
 
-## Expected total effort (on 2 CPU threads, measured; the Z440 should be faster)
+## Expected total effort (measured on 2 CPU threads with 7 GB RAM; this Z440 has 4 cores but only 3.7 GB RAM, so expect about the same, up to 1.5x slower)
 
 | Phase | Time |
 |---|---|
-| install engines + venv | 30-90 min (once) |
+| add swap | 2 min (once) |
+| install engines + venv | 1.5-3 h with 4 GB RAM (once; one compiler at a time) |
 | copy bag | 2-15 min |
 | smoke test | 5-10 min |
 | Stage A (export, revisits 23 min, RTAB-Map 64 min, ORB-SLAM3 28 min, map, video) | about 2.5 h |
-| Stage B (Open3D O1) | 2-9 h depending on cores (optional) |
+| Stage B (Open3D O1) | 4-6 h on 4 cores (optional; its memory use at full length is untested, with 4 GB RAM consider skipping it) |
 
-Disk: bag 8 GB + dataset about 8 GB + engines/tools about 5 GB + runs about 5 GB + final map about 1 GB = about 27 GB;
-45 GB free leaves room.
+Disk: bag 11 GB + dataset about 10 GB + engines/tools about 5 GB + runs about 5 GB + final map about 1 GB + swap 16 GB
+= about 48 GB; this machine has 395 GB free, so no problem.
 
 ## After the map is accepted
 

@@ -21,6 +21,10 @@ bad()  { echo "FAIL  $*"; FAIL=1; }
 [ "${VERSION_ID:-}" = "22.04" ] && ok "Ubuntu 22.04" || warn "OS is ${PRETTY_NAME:-unknown} (tested on 22.04)"
 echo "INFO  $(nproc) CPU threads, $(awk '/MemTotal/ {printf "%d", $2/1048576}' /proc/meminfo) GB RAM, repo $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)"
 
+RAM=$(awk '/MemTotal/ {printf "%d", $2/1048576 + 0.5}' /proc/meminfo); SWAP=$(awk '/SwapTotal/ {printf "%d", $2/1048576}' /proc/meminfo)
+if [ $((RAM + SWAP)) -ge 20 ]; then ok "memory: $RAM GB RAM + $SWAP GB swap"
+elif [ $((RAM + SWAP)) -ge 8 ]; then warn "memory: $RAM GB RAM + $SWAP GB swap (works, slowly; 16 GB RAM or more is comfortable)"
+else bad "memory: $RAM GB RAM + $SWAP GB swap (add swap: sudo fallocate -l 16G /swapfile_mv2 && sudo chmod 600 /swapfile_mv2 && sudo mkswap /swapfile_mv2 && sudo swapon /swapfile_mv2)"; fi
 mkdir -p "$DATA" 2>/dev/null
 FREE=$(df --output=avail -BG "$DATA" 2>/dev/null | tail -1 | tr -dc 0-9)
 if [ -z "$FREE" ]; then warn "could not read free disk space of $DATA"

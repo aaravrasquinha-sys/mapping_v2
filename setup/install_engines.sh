@@ -27,6 +27,16 @@ ORB_COMMIT=4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4
 # compiler jobs: ~3 GB RAM per job (ORB-SLAM3 needs ~6 GB per job, handled in its own script)
 MEM_GB=$(awk '/MemAvailable/ {m=$2} /SwapFree/ {s=$2} END {print int((m+s)/1048576)}' /proc/meminfo)
 J=$(( MEM_GB / 3 )); [ "$J" -lt 1 ] && J=1; [ "$J" -gt "$(nproc)" ] && J=$(nproc)
+RAM_GB=$(awk '/MemTotal/ {print int($2/1048576 + 0.5)}' /proc/meminfo)
+SWAP_GB=$(awk '/SwapTotal/ {print int($2/1048576)}' /proc/meminfo)
+RJ=$(( RAM_GB / 3 )); [ "$RJ" -lt 1 ] && RJ=1
+[ "$J" -gt "$RJ" ] && J=$RJ                    # jobs limited by physical RAM (swap is only a safety net)
+if [ $(( RAM_GB + SWAP_GB )) -lt 8 ]; then
+  echo "ERROR: ${RAM_GB} GB RAM + ${SWAP_GB} GB swap is too little to compile ORB-SLAM3 (needs about 6 GB for one file)."
+  echo "Add swap, then run this command again:"
+  echo "  sudo fallocate -l 16G /swapfile_mv2 && sudo chmod 600 /swapfile_mv2 && sudo mkswap /swapfile_mv2 && sudo swapon /swapfile_mv2"
+  [ "${SKIP_MEM_CHECK:-0}" = 1 ] || exit 1
+fi
 echo "install_engines: tools in $TOOLS, $J parallel jobs (${MEM_GB} GB RAM+swap available), parts: $WANT"
 
 . /etc/os-release

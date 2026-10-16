@@ -8,6 +8,8 @@ D="$(cd "${1:?usage: build_orbslam3.sh ORB_SLAM3_DIR [JOBS]}" && pwd)"
 # with 5 GB free; it built with 5 GB RAM + swap
 MEM_GB=$(awk '/MemAvailable/ {m=$2} /SwapFree/ {s=$2} END {print int((m+s)/1048576)}' /proc/meminfo)
 AUTO_J=$(( MEM_GB / 6 )); [ "$AUTO_J" -lt 1 ] && AUTO_J=1; [ "$AUTO_J" -gt "$(nproc)" ] && AUTO_J=$(nproc)
+RAM_J=$(( $(awk '/MemTotal/ {print int($2/1048576)}' /proc/meminfo) / 6 )); [ "$RAM_J" -lt 1 ] && RAM_J=1
+[ "$AUTO_J" -gt "$RAM_J" ] && AUTO_J=$RAM_J        # swap is a safety net, not working memory
 [ "$MEM_GB" -lt 6 ] && echo "WARNING: only ${MEM_GB} GB RAM+swap available; Optimizer.cc needs about 6 GB (add swap if the compiler is killed)"
 J="${2:-$AUTO_J}"
 echo "building with $J parallel jobs (${MEM_GB} GB RAM+swap available)"
