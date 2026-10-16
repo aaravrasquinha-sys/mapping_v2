@@ -28,7 +28,7 @@ Rules that hold throughout
 sudo systemctl mask sleep.target suspend.target hibernate.target
 sudo apt update && sudo apt install -y git tmux rsync
 export JETSON=drdo@192.168.1.101        # change if the Jetson's address is different
-[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N ""    # only if you have no ssh key yet
+[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519    # only if you have no ssh key yet (no questions asked)
 ssh-copy-id $JETSON                     # one-time: no more password prompts for ssh/rsync
 ssh $JETSON 'ls -l ~/bags/walk1.db3; df -h ~ | tail -1'    # must show the bag, about 8 GB
 tmux new -s mv2                         # everything below runs in here
