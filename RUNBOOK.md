@@ -111,6 +111,16 @@ chmod a-w ~/mv2_data/bags/walk1.db3
   `sha256sum ~/bags/walk1.db3 > /media/<usb>/walk1.jetson.sha256`; on the Z440 copy both files into
   `~/mv2_data/bags/` and run the same compare.
 
+### 3b. Optional: watch the recording (needs step 2 finished and `bash setup/make_venv.sh` done)
+```bash
+cd ~/mv2 && source ~/venvs/mv2/bin/activate
+python bagtools/preview_db3.py ~/mv2_data/bags/walk1.db3 ~/mv2_data/walk1.preview.mp4     # a few minutes
+xdg-open ~/mv2_data/walk1.preview.mp4          # on the Z440's own screen; or copy the mp4 to your laptop
+```
+Colour on the left, depth on the right (blue near, red far, black no depth), time in the corner. Look for: blur when
+turning, shaky stretches, blank or glaring areas, the person or objects moving, depth holes. Options: `--max-seconds 30`
+for a quick look, `--speed 4` to watch it fast, `--step 1` for every frame.
+
 ## 4. Verify everything in one go (1 min)
 
 ```bash
