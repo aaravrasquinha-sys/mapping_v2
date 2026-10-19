@@ -13,8 +13,10 @@
 #
 # Usage:
 #   bash engines/rtabmap/run_rtabmap.sh DATASET RUNS_ROOT [--r2] [--max-frames N] [--native]
-#        [--docker] [--image IMAGE] [--no-fuse]
+#        [--docker] [--image IMAGE] [--no-fuse] [--r2-only R1_RUN_DIR]
 #   --r2           also make the R2 run
+#   --r2-only DIR  make only R2, from the database of an R1 run that already finished (DIR = its run folder,
+#                  e.g. ~/mv2_data/runs/20261016-1604_rtabmap_R1); R1 is not run again
 #   --max-frames N smoke test on the first N frames
 #   --native       native RTAB-Map: $RTABMAP_BIN, else ~/mv2_tools/rtabmap/bin (setup/install_engines.sh),
 #                  else PATH. This is the default when ~/mv2_tools/rtabmap/bin exists.
@@ -26,21 +28,22 @@ REPO="$(cd "$HERE/../.." && pwd)"
 
 DEFAULT_BIN="${MV2_TOOLS:-$HOME/mv2_tools}/rtabmap/bin"
 NATIVE=0; { [ -n "${RTABMAP_BIN:-}" ] || [ -x "$DEFAULT_BIN/rtabmap-rgbd_dataset" ]; } && NATIVE=1
-DS="" ROOT="" R2=0 MAXF=0 FUSE=1 IMAGE="${RTABMAP_IMAGE:-introlab3it/rtabmap:noble}"
+DS="" ROOT="" R2=0 R2ONLY="" MAXF=0 FUSE=1 IMAGE="${RTABMAP_IMAGE:-introlab3it/rtabmap:noble}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --r2) R2=1 ;;
+    --r2-only) R2=1; R2ONLY="$2"; shift ;;
     --max-frames) MAXF="$2"; shift ;;
     --native) NATIVE=1 ;;
     --docker) NATIVE=0 ;;
     --image) IMAGE="$2"; NATIVE=0; shift ;;
     --no-fuse) FUSE=0 ;;
-    -h|--help) sed -n 2,24p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,27p "$0"; exit 0 ;;
     *) if [ -z "$DS" ]; then DS="$1"; elif [ -z "$ROOT" ]; then ROOT="$1"; else echo "unknown argument $1"; exit 1; fi ;;
   esac
   shift
 done
-[ -n "$DS" ] && [ -n "$ROOT" ] || { sed -n 2,24p "$0"; exit 1; }
+[ -n "$DS" ] && [ -n "$ROOT" ] || { sed -n 2,27p "$0"; exit 1; }
 DS="$(cd "$DS" && pwd)"
 mkdir -p "$ROOT"; ROOT="$(cd "$ROOT" && pwd)"
 [ -f "$DS/rtabmap_calib.yaml" ] && [ -d "$DS/rgb_sync" ] && [ -d "$DS/depth_sync" ] \
@@ -53,7 +56,14 @@ python -c "import open3d, pyrealsense2" 2>/dev/null || { echo "ERROR: activate t
 STAMP="$(date +%Y%m%d-%H%M)"
 TAG="$( [ "$MAXF" -gt 0 ] && echo "_smoke$MAXF" || true )"
 RUN1="$ROOT/${STAMP}_rtabmap_R1${TAG}"
-mkdir -p "$RUN1"
+if [ -n "$R2ONLY" ]; then
+  [ -s "$R2ONLY/rtabmap.db" ] && [ -f "$R2ONLY/run.json" ] \
+    || { echo "ERROR: --r2-only: $R2ONLY has no rtabmap.db / run.json (is it a finished R1 run folder?)"; exit 1; }
+  RUN1="$(cd "$R2ONLY" && pwd)"
+  echo "R2 only: reusing the R1 database in $RUN1"
+else
+  mkdir -p "$RUN1"
+fi
 
 # ---- how to call RTAB-Map tools (native or Docker; same paths inside and outside the container)
 if [ "$NATIVE" -eq 1 ]; then
@@ -92,6 +102,7 @@ fi
 PARAMS=(--Rtabmap/DetectionRate 2 --RGBD/LinearUpdate 0 --RGBD/AngularUpdate 0 --Mem/STMSize 30
         --Rtabmap/CreateIntermediateNodes true --Odom/ResetCountdown 1)
 
+if [ -z "$R2ONLY" ]; then
 # ---- R1
 echo "R1: rtabmap-rgbd_dataset ... (log: $RUN1/rtabmap.log)"
 T0=$(date +%s)
@@ -108,6 +119,7 @@ rt rtabmap-export --poses_camera --poses_format 10 --opt 0 --output_dir "$RUN1" 
 rt rtabmap-info "$RUN1/rtabmap.db" > "$RUN1/rtabmap_info.txt" 2>&1 || true
 grep -E "^(Sessions|Maps in graph|Optimized graph|Global graph):" "$RUN1/rtabmap_info.txt" | sed 's/^/  /' || true
 echo "  (more than 1 session = odometry was lost and restarted; 'Maps in graph' lists the sessions joined into the map)"
+fi
 
 write_runjson() {  # dir variant seconds params...
   local dir="$1" variant="$2" secs="$3"; shift 3
@@ -119,15 +131,17 @@ json.dump({"engine": "rtabmap", "variant": variant, "runtime_s": int(secs), "rta
           open(f"{d}/run.json", "w"), indent=2)
 EOF
 }
-write_runjson "$RUN1" R1 $((T1 - T0)) "${PARAMS[@]}"
-grep -E "Processing|Iteration .*/|Total time|translational_rmse|rotational_rmse" "$RUN1/rtabmap.log" | tail -4 || true
+if [ -z "$R2ONLY" ]; then
+  write_runjson "$RUN1" R1 $((T1 - T0)) "${PARAMS[@]}"
+  grep -E "Processing|Iteration .*/|Total time|translational_rmse|rotational_rmse" "$RUN1/rtabmap.log" | tail -4 || true
+fi
 
 finish() {  # run_dir engine_traj
   python "$REPO/eval/convert_traj.py" "$DS" "$2" "$1"
   python "$REPO/eval/evaluate.py" "$DS" "$1"
   if [ "$FUSE" -eq 1 ]; then python "$REPO/eval/fuse.py" "$DS" "$1"; fi
 }
-finish "$RUN1" "$RUN1/r1_camera_poses.txt"
+[ -z "$R2ONLY" ] && finish "$RUN1" "$RUN1/r1_camera_poses.txt"
 
 # ---- R2
 if [ "$R2" -eq 1 ]; then
