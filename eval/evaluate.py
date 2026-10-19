@@ -123,16 +123,25 @@ def gyro_check(ds, poses, R_ci):
     dtg = np.diff(tg, prepend=tg[0])
     C = np.cumsum(wc * dtg[:, None], axis=0)
 
-    def mean_rate(t0, t1, lag):
-        c0 = np.array([np.interp(t0 - lag, tg, C[:, i]) for i in range(3)])
-        c1 = np.array([np.interp(t1 - lag, tg, C[:, i]) for i in range(3)])
-        return (c1 - c0) / (t1 - t0)
+    Cc = [np.ascontiguousarray(C[:, i]) for i in range(3)]       # contiguous columns: np.interp copies strided input every call
 
-    sub = rates[:: max(1, len(rates) // 3000)]
-    traj_mag = np.array([np.linalg.norm(r[1]) for r in sub])
+    def mean_rates(t0, t1, lag):
+        """Mean gyro rate over [t0, t1] (arrays of any shape) -> array shape + (3,), vectorised."""
+        t0 = np.asarray(t0, float)
+        t1 = np.asarray(t1, float)
+        c0 = np.stack([np.interp(t0 - lag, tg, Cc[i]) for i in range(3)], axis=-1)
+        c1 = np.stack([np.interp(t1 - lag, tg, Cc[i]) for i in range(3)], axis=-1)
+        return (c1 - c0) / (t1 - t0)[..., None]
+
+    R_t0 = np.array([r[2] for r in rates])
+    R_t1 = np.array([r[3] for r in rates])
+    R_w = np.array([r[1] for r in rates])
+
+    step_sub = max(1, len(rates) // 3000)
+    traj_mag = np.linalg.norm(R_w[::step_sub], axis=1)
     best = (None, -2)
     for lag in np.arange(-0.2, 0.2001, 0.002):        # camera time = gyro time + lag
-        g_mag = np.array([np.linalg.norm(mean_rate(r[2], r[3], lag)) for r in sub])
+        g_mag = np.linalg.norm(mean_rates(R_t0[::step_sub], R_t1[::step_sub], lag), axis=1)
         if g_mag.std() < 1e-9 or traj_mag.std() < 1e-9:
             continue
         c = np.corrcoef(traj_mag, g_mag)[0, 1]
@@ -140,7 +149,7 @@ def gyro_check(ds, poses, R_ci):
             best = (lag, c)
     lag = best[0] if best[0] is not None else 0.0
     # gyro bias (camera axes): median difference over all frame intervals
-    diffs = np.array([mean_rate(r[2], r[3], lag) - r[1] for r in rates])
+    diffs = mean_rates(R_t0, R_t1, lag) - R_w
     bias = np.median(diffs, axis=0)
     # rotation over windows: trajectory vs integrated gyro
     n = max(1, int(round(WIN_GYRO_S / np.median(np.diff(ds.stamps)))))
@@ -169,15 +178,12 @@ def gyro_check(ds, poses, R_ci):
     # if the engine wrote RTAB-Map's base frame (x fwd, y left, z up), the optical-frame rate is O^T r
     O = np.array([[0, 0, 1], [-1, 0, 0], [0, -1, 0]], float)    # base_from_optical
     for name, M in (("rtabmap_base_instead_of_optical", O.T),):
-        da = np.array([np.linalg.norm(mean_rate(r[2], r[3], lag) - bias - M @ r[1]) for r in rates[::10]])
+        da = np.linalg.norm(mean_rates(R_t0[::10], R_t1[::10], lag) - bias - R_w[::10] @ M.T, axis=1)
         alt[name] = float(np.median(da))
-    d0 = np.array([np.linalg.norm(mean_rate(r[2], r[3], lag) - bias - r[1]) for r in rates[::10]])
+    d0 = np.linalg.norm(mean_rates(R_t0[::10], R_t1[::10], lag) - bias - R_w[::10], axis=1)
     # per-frame rotation vs gyro (catches out-and-back rotation spikes that cancel inside a window)
-    frame_err = []
-    for r in rates:
-        dt = r[3] - r[2]
-        e_deg = np.degrees(np.linalg.norm((mean_rate(r[2], r[3], lag) - bias - r[1]) * dt))
-        frame_err.append((r[2], e_deg))
+    e_deg_all = np.degrees(np.linalg.norm((mean_rates(R_t0, R_t1, lag) - bias - R_w) * (R_t1 - R_t0)[:, None], axis=1))
+    frame_err = [(float(t), float(e)) for t, e in zip(R_t0, e_deg_all)]
     stamp_to_frame = {round(t, 6): i for i, t in enumerate(ds.stamps)}
     rot_spikes = [stamp_to_frame.get(round(t, 6), -1) + 1 for t, e_deg in frame_err if e_deg > FRAME_ROT_LIMIT_DEG]
     convention_ok = all(float(np.median(d0)) <= v for v in alt.values())

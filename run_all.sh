@@ -8,7 +8,7 @@
 #
 # Usage:
 #   bash run_all.sh BAG.db3 [--name NAME] [--data DIR] [--engines "rtabmap orbslam3 open3d"] [--slac]
-#                   [--smoke N] [--no-video] [--revisit-minutes N]
+#                   [--smoke N] [--no-video] [--revisit-minutes N] [--no-r2] [--no-revisits]
 #   --name      dataset name (default: bag file name without .db3, e.g. walk1)
 #   --data      data folder (default ~/mv2_data): datasets/, runs/, final/, logs/
 #   --engines   which engines to run (default: all three; Open3D is the slow one, 1-3 h)
@@ -16,12 +16,14 @@
 #   --smoke N   quick machine test on the first N frames (dataset NAME_smokeN; everything else identical)
 #   --no-video  skip the replay video
 #   --revisit-minutes N  time limit of the revisit search (default 40; fewer minutes = fewer pairs found)
+#   --no-revisits  skip the revisit search (no drift yardstick; saves 10-40 min; the map is not affected)
+#   --no-r2     RTAB-Map R1 only (skip the R2 loop-closure/bundle-adjustment variant)
 #
 # Needs: setup/make_venv.sh and setup/install_engines.sh done once.
 # Results: DATA/final/NAME/ (the map), DATA/runs/compare_NAME.md/.png, DATA/runs/SUMMARY_NAME.txt
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
-BAG="" NAME="" DATA="$HOME/mv2_data" ENGINES="rtabmap orbslam3 open3d" SLAC=0 SMOKE=0 VIDEO=1 REVISIT_MIN=40
+BAG="" NAME="" DATA="$HOME/mv2_data" ENGINES="rtabmap orbslam3 open3d" SLAC=0 SMOKE=0 VIDEO=1 REVISIT_MIN=40 NO_R2=0 NO_REV=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="$2"; shift ;;
@@ -31,7 +33,9 @@ while [ $# -gt 0 ]; do
     --smoke) SMOKE="$2"; shift ;;
     --no-video) VIDEO=0 ;;
     --revisit-minutes) REVISIT_MIN="$2"; shift ;;
-    -h|--help) sed -n 2,23p "$0"; exit 0 ;;
+    --no-r2) NO_R2=1 ;;
+    --no-revisits) NO_REV=1 ;;
+    -h|--help) sed -n 2,25p "$0"; exit 0 ;;
     *) [ -z "$BAG" ] && BAG="$1" || { echo "unknown argument $1"; exit 1; } ;;
   esac
   shift
@@ -113,7 +117,8 @@ fi
 
 # ---- 3. revisit pairs (independent of every engine; used to score them)
 PAIRS="$RUNS/_cache/$NAME/revisit_pairs.json"
-if [ -f "$PAIRS" ]; then STATUS+=("skip   revisit pairs (exist)")
+if [ "$NO_REV" -eq 1 ]; then STATUS+=("skip   revisit pairs (--no-revisits)")
+elif [ -f "$PAIRS" ]; then STATUS+=("skip   revisit pairs (exist)")
 else mkdir -p "$(dirname "$PAIRS")"
      step "revisit pairs" "$LOGS/3_revisits.log" python "$REPO/eval/revisit_pairs.py" "$DS" "$PAIRS" --max-minutes "$REVISIT_MIN" || true
 fi
@@ -137,7 +142,11 @@ compare_and_finish() {  # label
 # ---- 4a. fast engines
 has() { case " $ENGINES " in *" $1 "*) return 0;; *) return 1;; esac; }
 if has rtabmap; then
-  if [ -n "$(latest_run rtabmap_R1)" ] && [ -n "$(latest_run rtabmap_R2)" ]; then STATUS+=("skip   RTAB-Map R1+R2 (done)")
+  if [ "$NO_R2" -eq 1 ]; then
+    if [ -n "$(latest_run rtabmap_R1)" ]; then STATUS+=("skip   RTAB-Map R1 (done)")
+    else step "RTAB-Map R1" "$LOGS/4_rtabmap.log" bash "$REPO/engines/rtabmap/run_rtabmap.sh" "$DS" "$RUNS" || true
+    fi
+  elif [ -n "$(latest_run rtabmap_R1)" ] && [ -n "$(latest_run rtabmap_R2)" ]; then STATUS+=("skip   RTAB-Map R1+R2 (done)")
   else step "RTAB-Map R1+R2" "$LOGS/4_rtabmap.log" bash "$REPO/engines/rtabmap/run_rtabmap.sh" "$DS" "$RUNS" --r2 || true
   fi
 fi
