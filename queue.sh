@@ -5,7 +5,7 @@
 #
 #   run_all options default to: --engines rtabmap --no-r2 --no-revisits --no-video   (RTAB-Map R1 only)
 #   --retries N  extra attempts per bag after a failure (default 2). run_all.sh resumes, so a retry
-#                only redoes the step that failed (a map step that ran out of memory is redone alone,
+#                only redoes the step that failed (R2 that died is redone from R1's database) (a map step that ran out of memory is redone alone,
 #                and the map builder then picks a coarser voxel size by itself).
 #   --force      start even if the disk space check says the bags may not fit
 #
@@ -78,12 +78,17 @@ for b in "${BAGS[@]}"; do
     note "=== $n: attempt $a of $((RETRIES + 1))"
     mkdir -p "$DATA/logs/$n"
     bash "$REPO/run_all.sh" "$b" "${OPTS[@]}" 2>&1 | tee -a "$DATA/logs/$n/run_all_queue.log"
-    if [ -f "$DATA/final/$n/MANIFEST.json" ]; then ok=1; break; fi
-    note "=== $n: no final map after attempt $a"
+    # done = a final map exists and no engine/map step failed in this attempt (a failed revisit search does
+    # not count: it only scores the runs). Otherwise retry: run_all redoes only what is missing.
+    failed="$(grep -E '^FAILED' "$DATA/runs/SUMMARY_$n.txt" 2>/dev/null | grep -v 'revisit pairs' || true)"
+    if [ -f "$DATA/final/$n/MANIFEST.json" ] && [ -z "$failed" ]; then ok=1; break; fi
+    if [ -f "$DATA/final/$n/MANIFEST.json" ]; then note "=== $n: a final map exists but these steps failed (attempt $a):"; echo "$failed"
+    else note "=== $n: no final map after attempt $a"; fi
     [ "$a" -le "$RETRIES" ] && sleep "${MV2_RETRY_WAIT_S:-120}"
   done
   dt=$(( ($(date +%s) - t0) / 60 ))
   if [ "$ok" -eq 1 ]; then RESULTS+=("DONE    $n  (${dt} min, attempt $a)  map: $DATA/final/$n")
+  elif [ -f "$DATA/final/$n/MANIFEST.json" ]; then RESULTS+=("PARTIAL $n  (${dt} min; final map made, but some steps failed: see $DATA/runs/SUMMARY_$n.txt)  map: $DATA/final/$n")
   else RESULTS+=("FAILED  $n  (${dt} min, $((RETRIES + 1)) attempts)  see $DATA/runs/SUMMARY_$n.txt and $DATA/logs/$n/"); fi
   note "${RESULTS[-1]}"
 done

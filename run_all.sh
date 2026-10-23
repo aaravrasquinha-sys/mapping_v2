@@ -191,6 +191,9 @@ if has rtabmap; then
     else step "RTAB-Map R1" "$LOGS/4_rtabmap.log" bash "$REPO/engines/rtabmap/run_rtabmap.sh" "$DS" "$RUNS" || true
     fi
   elif [ -n "$(latest_run rtabmap_R1)" ] && [ -n "$(latest_run rtabmap_R2)" ]; then STATUS+=("skip   RTAB-Map R1+R2 (done)")
+  elif [ -n "$(latest_run rtabmap_R1)" ]; then     # R1 finished earlier, R2 missing or died: R2 alone from R1's database
+    step "RTAB-Map R2 (from $(basename "$(latest_run rtabmap_R1)"))" "$LOGS/4_rtabmap_R2.log" \
+      bash "$REPO/engines/rtabmap/run_rtabmap.sh" "$DS" "$RUNS" --r2-only "$(latest_run rtabmap_R1)" || true
   else step "RTAB-Map R1+R2" "$LOGS/4_rtabmap.log" bash "$REPO/engines/rtabmap/run_rtabmap.sh" "$DS" "$RUNS" --r2 || true
   fi
 fi

@@ -13,7 +13,7 @@
 #
 # Usage:
 #   bash engines/rtabmap/run_rtabmap.sh DATASET RUNS_ROOT [--r2] [--max-frames N] [--native]
-#        [--docker] [--image IMAGE] [--no-fuse] [--r2-only R1_RUN_DIR]
+#        [--docker] [--image IMAGE] [--no-fuse] [--r2-only R1_RUN_DIR] [--param NAME VALUE]... [--tag TAG]
 #   --r2           also make the R2 run
 #   --r2-only DIR  make only R2, from the database of an R1 run that already finished (DIR = its run folder,
 #                  e.g. ~/mv2_data/runs/20261016-1604_rtabmap_R1); R1 is not run again
@@ -21,6 +21,11 @@
 #   --native       native RTAB-Map: $RTABMAP_BIN, else ~/mv2_tools/rtabmap/bin (setup/install_engines.sh),
 #                  else PATH. This is the default when ~/mv2_tools/rtabmap/bin exists.
 #   --docker       force Docker; --image IMAGE (default introlab3it/rtabmap:noble)
+#   --param N V    extra RTAB-Map parameter on top of R1's (repeatable), e.g. --param Vis/MaxDepth 7
+#   --tag TAG      suffix for the run folders (..._rtabmap_R1_TAG), so a variant never mixes with plain R1/R2
+# rtabmap.log has one line per frame (odometry inliers/features), used by eval/rtabmap_report.py.
+# R2: if a post-processing tool fails (e.g. out of memory in bundle adjustment), R2 is still exported from
+# what did finish and run.json says which steps failed.
 # Needs the Python venv active (python with mapping_v2 requirements) for the evaluation steps.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -28,7 +33,7 @@ REPO="$(cd "$HERE/../.." && pwd)"
 
 DEFAULT_BIN="${MV2_TOOLS:-$HOME/mv2_tools}/rtabmap/bin"
 NATIVE=0; { [ -n "${RTABMAP_BIN:-}" ] || [ -x "$DEFAULT_BIN/rtabmap-rgbd_dataset" ]; } && NATIVE=1
-DS="" ROOT="" R2=0 R2ONLY="" MAXF=0 FUSE=1 IMAGE="${RTABMAP_IMAGE:-introlab3it/rtabmap:noble}"
+DS="" ROOT="" R2=0 R2ONLY="" MAXF=0 FUSE=1 EXTRA=() UTAG="" IMAGE="${RTABMAP_IMAGE:-introlab3it/rtabmap:noble}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --r2) R2=1 ;;
@@ -38,12 +43,14 @@ while [ $# -gt 0 ]; do
     --docker) NATIVE=0 ;;
     --image) IMAGE="$2"; NATIVE=0; shift ;;
     --no-fuse) FUSE=0 ;;
-    -h|--help) sed -n 2,27p "$0"; exit 0 ;;
+    --param) EXTRA+=("--$2" "$3"); shift 2 ;;
+    --tag) UTAG="_$2"; shift ;;
+    -h|--help) sed -n 2,33p "$0"; exit 0 ;;
     *) if [ -z "$DS" ]; then DS="$1"; elif [ -z "$ROOT" ]; then ROOT="$1"; else echo "unknown argument $1"; exit 1; fi ;;
   esac
   shift
 done
-[ -n "$DS" ] && [ -n "$ROOT" ] || { sed -n 2,27p "$0"; exit 1; }
+[ -n "$DS" ] && [ -n "$ROOT" ] || { sed -n 2,33p "$0"; exit 1; }
 DS="$(cd "$DS" && pwd)"
 mkdir -p "$ROOT"; ROOT="$(cd "$ROOT" && pwd)"
 [ -f "$DS/rtabmap_calib.yaml" ] && [ -d "$DS/rgb_sync" ] && [ -d "$DS/depth_sync" ] \
@@ -54,7 +61,7 @@ esac
 python -c "import open3d, pyrealsense2" 2>/dev/null || { echo "ERROR: activate the venv first: source ~/venvs/mv2/bin/activate"; exit 1; }
 
 STAMP="$(date +%Y%m%d-%H%M)"
-TAG="$( [ "$MAXF" -gt 0 ] && echo "_smoke$MAXF" || true )"
+TAG="$( [ "$MAXF" -gt 0 ] && echo "_smoke$MAXF" || true )$UTAG"
 RUN1="$ROOT/${STAMP}_rtabmap_R1${TAG}"
 if [ -n "$R2ONLY" ]; then
   [ -s "$R2ONLY/rtabmap.db" ] && [ -f "$R2ONLY/run.json" ] \
@@ -100,13 +107,16 @@ if [ "$MAXF" -gt 0 ]; then
 fi
 
 PARAMS=(--Rtabmap/DetectionRate 2 --RGBD/LinearUpdate 0 --RGBD/AngularUpdate 0 --Mem/STMSize 30
-        --Rtabmap/CreateIntermediateNodes true --Odom/ResetCountdown 1)
+        --Rtabmap/CreateIntermediateNodes true --Odom/ResetCountdown 1 ${EXTRA[@]+"${EXTRA[@]}"})
+if [ -n "$R2ONLY" ]; then     # R2 from an existing R1: label it with that R1's parameters
+  mapfile -t PARAMS < <(python -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))['parameters']))" "$RUN1/run.json")
+fi
 
 if [ -z "$R2ONLY" ]; then
 # ---- R1
 echo "R1: rtabmap-rgbd_dataset ... (log: $RUN1/rtabmap.log)"
 T0=$(date +%s)
-rt rtabmap-rgbd_dataset --output "$RUN1" --quiet "${PARAMS[@]}" "$INPUT" > "$RUN1/rtabmap.log" 2>&1 || true
+rt rtabmap-rgbd_dataset --output "$RUN1" "${PARAMS[@]}" "$INPUT" > "$RUN1/rtabmap.log" 2>&1 || true
 T1=$(date +%s)
 grep -q "Camera init failed" "$RUN1/rtabmap.log" && { echo "ERROR: RTAB-Map could not read the dataset/calibration (see rtabmap.log)"; exit 1; }
 [ -s "$RUN1/rtabmap.db" ] || { echo "ERROR: no database written (see $RUN1/rtabmap.log)"; tail -20 "$RUN1/rtabmap.log"; exit 1; }
@@ -148,16 +158,26 @@ if [ "$R2" -eq 1 ]; then
   RUN2="$ROOT/${STAMP}_rtabmap_R2${TAG}"
   mkdir -p "$RUN2"
   cp "$RUN1/rtabmap.db" "$RUN2/rtabmap.db"
+  cp "$RUN1/rtabmap.log" "$RUN2/rtabmap_r1.log" 2>/dev/null || true     # R2's odometry is R1's
   echo "R2: detectMoreLoopClosures + globalBundleAdjustment (log: $RUN2/postprocess.log)"
   T0=$(date +%s)
-  { rt rtabmap-detectMoreLoopClosures "$RUN2/rtabmap.db"
-    rt rtabmap-globalBundleAdjustment "$RUN2/rtabmap.db"
-    rt rtabmap-export --poses_camera --poses_format 10 --opt 2 --output_dir "$RUN2" --output r2 "$RUN2/rtabmap.db"
-  } > "$RUN2/postprocess.log" 2>&1
+  PLOG="$RUN2/postprocess.log"; : > "$PLOG"
+  STEPS=()
+  if rt rtabmap-detectMoreLoopClosures "$RUN2/rtabmap.db" >> "$PLOG" 2>&1; then STEPS+=("+detectMoreLoopClosures")
+  else rc=$?; STEPS+=("+detectMoreLoopClosures FAILED (exit $rc)"); echo "WARNING: detectMoreLoopClosures failed (exit $rc)"; fi
+  cp "$RUN2/rtabmap.db" "$RUN2/rtabmap.before_ba.db"            # bundle adjustment rewrites the database
+  if rt rtabmap-globalBundleAdjustment "$RUN2/rtabmap.db" >> "$PLOG" 2>&1; then
+    STEPS+=("+globalBundleAdjustment"); OPT=2; rm -f "$RUN2/rtabmap.before_ba.db"
+  else
+    rc=$?; STEPS+=("+globalBundleAdjustment FAILED (exit $rc): exported with --opt 0 instead")
+    echo "WARNING: globalBundleAdjustment failed (exit $rc; 137 = out of memory); R2 = R1 + extra loop closures"
+    mv -f "$RUN2/rtabmap.before_ba.db" "$RUN2/rtabmap.db"; OPT=0
+  fi
+  rt rtabmap-export --poses_camera --poses_format 10 --opt "$OPT" --output_dir "$RUN2" --output r2 "$RUN2/rtabmap.db" >> "$PLOG" 2>&1
   T1=$(date +%s)
-  grep -E "total loop closures|bundle adjustment... done|camera poses exported" "$RUN2/postprocess.log" || true
+  grep -E "total loop closures|bundle adjustment... done|camera poses exported" "$PLOG" || true
   write_runjson "$RUN2" R2 $(( $(python -c "import json;print(json.load(open('$RUN1/run.json'))['runtime_s'])") + T1 - T0 )) \
-    "${PARAMS[@]}" "+detectMoreLoopClosures" "+globalBundleAdjustment"
+    "${PARAMS[@]}" "${STEPS[@]}"
   finish "$RUN2" "$RUN2/r2_camera_poses.txt"
 fi
 echo "Done. Results table: $ROOT/results.csv"

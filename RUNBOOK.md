@@ -273,3 +273,15 @@ tail -f ~/queue.log                             # first lines: RAM/swap/disk che
 - Every step in `SUMMARY_<name>.txt` shows its peak memory. If a map step died, the next attempt rebuilds only the
   map (no second RTAB-Map run).
 - Results: `~/mv2_data/runs/QUEUE_<date>.txt` (one line per bag + each bag's summary), maps in `~/mv2_data/final/`.
+
+## 10. RTAB-Map study of one recording (R1 + R2 + variants + comparison report): `rtabmap_study.sh`
+
+```bash
+setsid nohup bash rtabmap_study.sh ~/mv2_data/bags/corridor1_slow.db3 > ~/study.log 2>&1 < /dev/null &
+```
+Runs queue.sh (export, R1 + R2, final map; retries), then R1 variants (default `d7` = `Vis/MaxDepth 7`; RTAB-Map's
+own default is 0 = no depth limit), then `eval/rtabmap_report.py` on every run. Results in
+`~/mv2_data/final/<name>/rtabmap_report/`: `rtabmap_comparison.md`, and per run `report.md` (resets with times,
+frames without pose, loop-closure time pairs, legs/turn, positions every 60 s, the spin, points below the floor),
+`windows.csv` (per 5 s), `path.png`, `corridor_views.png`, `views.png`, `run.json` (exact parameters).
+R2 survives a failed bundle adjustment (exported with --opt 0, marked FAILED in run.json).
