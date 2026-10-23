@@ -248,3 +248,28 @@ Keep: `~/mv2_data/final/walk1/` and the bag. Safe to delete to save space: `~/mv
 recreated from the bag with one command), `~/mv2_tools/src`. Only then consider freeing the Jetson copy, and only
 after a second copy of the bag exists somewhere else. STS integration and the map anchor are deliberately not
 started until the map is accepted.
+
+## 9. Several bags unattended (e.g. over a weekend): `queue.sh`
+
+```bash
+# once, before leaving (needs sudo): no sleep, no systemd-oomd, swap on
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+sudo systemctl disable --now systemd-oomd
+swapon --show                                   # must list the 19 GB swap
+cd ~/mv2 && git pull && source ~/venvs/mv2/bin/activate
+chmod a-w ~/mv2_data/bags/*.db3
+setsid nohup bash queue.sh ~/mv2_data/bags/corridor.db3 ~/mv2_data/bags/floor1.db3 ~/mv2_data/bags/floor2.db3 \
+  > ~/queue.log 2>&1 < /dev/null &
+tail -f ~/queue.log                             # first lines: RAM/swap/disk checks; Ctrl-C only stops watching
+```
+
+- Default is RTAB-Map R1 only (`--engines rtabmap --no-r2 --no-revisits --no-video`); other run_all options go
+  after `--`. Each bag gets up to 3 attempts; a failed bag does not stop the next.
+- It refuses to start with less than 4 GB swap or too little disk (each bag's export needs about the bag's size).
+- Memory: the map builder starts at 1 cm voxels and switches to 1.5 / 2 / 3 / 4 cm by itself if the map would not
+  fit in RAM (measured: about 0.35 GB + 40 KB per 8 cm voxel block; 1 cm needs about 150 blocks per m^2 of
+  surface). On this 3.7 GB machine about 64k blocks fit at 1 cm, i.e. one large room or a ~50 m corridor;
+  a whole floor will come out at 2-3 cm. The voxel used is in `map_frame.json` and the final README.
+- Every step in `SUMMARY_<name>.txt` shows its peak memory. If a map step died, the next attempt rebuilds only the
+  map (no second RTAB-Map run).
+- Results: `~/mv2_data/runs/QUEUE_<date>.txt` (one line per bag + each bag's summary), maps in `~/mv2_data/final/`.

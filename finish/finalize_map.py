@@ -180,13 +180,14 @@ def main():
     }
     with open(os.path.join(out, "MANIFEST.json"), "w") as fh:
         json.dump(manifest, fh, indent=2)
+    vox_cm = f"{100 * float(frame.get('voxel_m', 0.01)):g} cm"
     with open(os.path.join(out, "README.txt"), "w") as fh:
         fh.write(
             "Final map (mapping_v2)\n\n"
             "Frame: metres; +z is up (gravity from the IMU); floor at z = 0; first camera looks along +x.\n\n"
-            "map_mesh.ply        full-resolution coloured mesh (TSDF, 1 cm voxels)\n"
+            f"map_mesh.ply        full-resolution coloured mesh (TSDF, {vox_cm} voxels)\n"
             "map_mesh_view.ply   lighter mesh for viewers\n"
-            "map_cloud.ply       coloured point cloud (1 cm)\n"
+            f"map_cloud.ply       coloured point cloud ({vox_cm})\n"
             "trajectory_map.tum  camera path in the map frame (TUM: t x y z qx qy qz qw, colour optical frame)\n"
             "map_frame.json      how the map frame was made, floor tilt/flatness check\n"
             "metrics.json        quality metrics of the trajectory (see PLAN.md for targets)\n"

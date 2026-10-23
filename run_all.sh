@@ -8,7 +8,7 @@
 #
 # Usage:
 #   bash run_all.sh BAG.db3 [--name NAME] [--data DIR] [--engines "rtabmap orbslam3 open3d"] [--slac]
-#                   [--smoke N] [--no-video] [--revisit-minutes N] [--no-r2] [--no-revisits]
+#                   [--smoke N] [--no-video] [--revisit-minutes N] [--no-r2] [--no-revisits] [--voxel auto|V]
 #   --name      dataset name (default: bag file name without .db3, e.g. walk1)
 #   --data      data folder (default ~/mv2_data): datasets/, runs/, final/, logs/
 #   --engines   which engines to run (default: all three; Open3D is the slow one, 1-3 h)
@@ -18,12 +18,14 @@
 #   --revisit-minutes N  time limit of the revisit search (default 40; fewer minutes = fewer pairs found)
 #   --no-revisits  skip the revisit search (no drift yardstick; saves 10-40 min; the map is not affected)
 #   --no-r2     RTAB-Map R1 only (skip the R2 loop-closure/bundle-adjustment variant)
+#   --voxel     map voxel size in m, or auto (default: 1 cm, coarser only if the map would not fit in RAM;
+#               see eval/fuse.py). Several bags in a row, unattended: see queue.sh
 #
 # Needs: setup/make_venv.sh and setup/install_engines.sh done once.
 # Results: DATA/final/NAME/ (the map), DATA/runs/compare_NAME.md/.png, DATA/runs/SUMMARY_NAME.txt
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
-BAG="" NAME="" DATA="$HOME/mv2_data" ENGINES="rtabmap orbslam3 open3d" SLAC=0 SMOKE=0 VIDEO=1 REVISIT_MIN=40 NO_R2=0 NO_REV=0
+BAG="" NAME="" DATA="$HOME/mv2_data" ENGINES="rtabmap orbslam3 open3d" SLAC=0 SMOKE=0 VIDEO=1 REVISIT_MIN=40 NO_R2=0 NO_REV=0 VOXEL=auto
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME="$2"; shift ;;
@@ -35,7 +37,8 @@ while [ $# -gt 0 ]; do
     --revisit-minutes) REVISIT_MIN="$2"; shift ;;
     --no-r2) NO_R2=1 ;;
     --no-revisits) NO_REV=1 ;;
-    -h|--help) sed -n 2,25p "$0"; exit 0 ;;
+    --voxel) VOXEL="$2"; shift ;;
+    -h|--help) sed -n 2,26p "$0"; exit 0 ;;
     *) [ -z "$BAG" ] && BAG="$1" || { echo "unknown argument $1"; exit 1; } ;;
   esac
   shift
@@ -48,6 +51,7 @@ mkdir -p "$DATA"/{datasets,runs,final,logs/"$NAME"}
 DATA="$(cd "$DATA" && pwd)"
 DS="$DATA/datasets/$NAME" RUNS="$DATA/runs" LOGS="$DATA/logs/$NAME" FINAL="$DATA/final/$NAME"
 SUMMARY="$RUNS/SUMMARY_$NAME.txt"
+export MV2_VOXEL="$VOXEL"
 
 if [ -z "${VIRTUAL_ENV:-}" ]; then
   [ -f "$HOME/venvs/mv2/bin/activate" ] || { echo "ERROR: no venv; run: bash setup/make_venv.sh"; exit 1; }
@@ -58,14 +62,25 @@ python -c "import open3d, pyrealsense2" 2>/dev/null || { echo "ERROR: the venv l
 
 STATUS=()
 note() { echo "[$(date +%H:%M:%S)] $*"; }
-step() {  # name logfile command... : run, tee to log, record status
+step() {  # name logfile command... : run, tee to log, record status (+ peak memory if /usr/bin/time exists)
   local name="$1" log="$2"; shift 2
   note "$name ... (log: $log)"
   local t0; t0=$(date +%s)
-  "$@" 2>&1 | tee "$log"
-  local rc=${PIPESTATUS[0]}
+  local rc mem=""
+  if [ -x /usr/bin/time ]; then
+    /usr/bin/time -f "%M" -o "$log.peakmem" "$@" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
+    mem="$(tail -1 "$log.peakmem" 2>/dev/null | tr -dc 0-9)"; [ -n "$mem" ] && mem=", peak $((mem / 1024)) MB"
+  else
+    "$@" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}
+  fi
   local dt=$(( $(date +%s) - t0 ))
-  if [ "$rc" -eq 0 ]; then STATUS+=("OK     $name (${dt} s)"); else STATUS+=("FAILED $name (exit $rc, ${dt} s, see $log)"); fi
+  if [ "$rc" -eq 0 ]; then STATUS+=("OK     $name (${dt} s$mem)")
+  else
+    STATUS+=("FAILED $name (exit $rc, ${dt} s$mem, see $log)")
+    if [ "$rc" -eq 137 ] || grep -q "signal 9" "$log.peakmem" 2>/dev/null; then
+      note "$name was killed (exit $rc): most likely out of memory"
+    fi
+  fi
   return "$rc"
 }
 latest_run() {  # engine_variant -> newest finished, non-smoke run dir for this dataset (or nothing)
@@ -80,6 +95,24 @@ for d in sorted(os.listdir(root)):
         continue
     if os.path.basename(json.load(open(os.path.join(p, "metrics.json")))["dataset"].rstrip("/")) == name:
         best = p
+print(best or "")
+EOF
+}
+partial_run() {  # engine_variant -> newest run for this dataset with poses + metrics but no map (map step died)
+  python - "$RUNS" "$1" "$NAME" <<'EOF'
+import json, os, sys
+root, tag, name = sys.argv[1:]
+best = None
+for d in sorted(os.listdir(root)):
+    p = os.path.join(root, d)
+    if not d.endswith("_" + tag) or os.path.isfile(os.path.join(p, "map_frame.json")) \
+            or not os.path.isfile(os.path.join(p, "metrics.json")) or not os.path.isfile(os.path.join(p, "trajectory.tum")):
+        continue
+    try:
+        if os.path.basename(json.load(open(os.path.join(p, "metrics.json")))["dataset"].rstrip("/")) == name:
+            best = p
+    except Exception:
+        pass
 print(best or "")
 EOF
 }
@@ -108,6 +141,12 @@ if [ -f "$DS/export_report.json" ] && python -c "import json,sys; sys.exit(0 if 
 else
   if [ -d "$DS" ] && [ ! -f "$DS/meta.json" ]; then rm -rf "$DS"; fi       # half-finished export
   if [ ! -f "$DS/meta.json" ]; then
+    need=$(( $(stat -c %s "$BAG") / 1073741824 + ${MV2_DISK_MARGIN_GB:-10} ))
+    avail=$(( $(df --output=avail -B1 "$DATA" | tail -1) / 1073741824 ))
+    if [ "$avail" -lt "$need" ]; then
+      note "ERROR: only ${avail} GB free in $DATA; the export of this bag needs up to ~${need} GB. Free space first."
+      STATUS+=("FAILED export (disk: ${avail} GB free, ~${need} GB needed)"); summary; exit 1
+    fi
     MAXF=(); [ "$SMOKE" -gt 0 ] && MAXF=(--max-frames "$SMOKE")
     step "export" "$LOGS/2_export.log" python "$REPO/bagtools/export_db3.py" "$BAG" "$DS" "${MAXF[@]}" || { summary; exit 1; }
   fi
@@ -141,6 +180,11 @@ compare_and_finish() {  # label
 
 # ---- 4a. fast engines
 has() { case " $ENGINES " in *" $1 "*) return 0;; *) return 1;; esac; }
+# a run whose engine finished but whose map step died (e.g. out of memory): build only the map again
+for tag in rtabmap_R1 rtabmap_R2 orbslam3_S1 open3d_O1 open3d_O2; do
+  p="$(partial_run "$tag")"
+  if [ -n "$p" ]; then step "map for $(basename "$p") (resumed)" "$LOGS/4_map_$tag.log" python "$REPO/eval/fuse.py" "$DS" "$p" || true; fi
+done
 if has rtabmap; then
   if [ "$NO_R2" -eq 1 ]; then
     if [ -n "$(latest_run rtabmap_R1)" ]; then STATUS+=("skip   RTAB-Map R1 (done)")
