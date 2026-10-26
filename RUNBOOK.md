@@ -285,3 +285,9 @@ own default is 0 = no depth limit), then `eval/rtabmap_report.py` on every run. 
 frames without pose, loop-closure time pairs, legs/turn, positions every 60 s, the spin, points below the floor),
 `windows.csv` (per 5 s), `path.png`, `corridor_views.png`, `views.png`, `run.json` (exact parameters).
 R2 survives a failed bundle adjustment (exported with --opt 0, marked FAILED in run.json).
+
+### Pack the runs for someone else to compare (trajectories, maps, parameters, per-frame odometry, loop closures)
+```bash
+python eval/rtabmap_pack.py ~/mv2_data/datasets/NAME ~/mv2_data/runs/RUN1 ~/mv2_data/runs/RUN2 --out ~/mv2_data/final/NAME/pack_for_comparison [--spin 340-387] [--with-mesh]
+```
+Files per run are listed at the top of `eval/rtabmap_pack.py`. Make the report first (`rtabmap_study.sh ... --turn-window A-B`) so its pictures are included.
