@@ -19,7 +19,7 @@ eval/evaluate.py + eval/fuse.py), rtabmap.db (sessions, loop closures; read-only
 frame when RTAB-Map ran without --quiet), run.json (parameters).
 
 Usage: python eval/rtabmap_report.py DATASET RUN_DIR [RUN_DIR ...] [--out DIR] [--window-s 5]
-                                     [--windows "0-20,100-130,..."] [--spin 340-387]
+                                     [--windows "0-20,100-130,..."] [--spin 340-387] [--turn-window 150-260]
 """
 import argparse
 import csv
@@ -123,7 +123,7 @@ def smooth(t, P, win_s=1.0):
     return out
 
 
-def path_geometry(rel, P, up):
+def path_geometry(rel, P, up, turn_window=None):
     """Leg/turn analysis on posed positions P [N,3] at times rel [N] with gravity 'up'."""
     e1, e2 = horizontal_frame(P, up)
     H = np.stack([P @ e1, P @ e2], 1)
@@ -148,6 +148,8 @@ def path_geometry(rel, P, up):
     th = tm[moving]
     best, tb = 0.0, None
     for i, t in enumerate(th):
+        if turn_window and not (turn_window[0] <= t <= turn_window[1]):
+            continue                      # only look for the corner inside the window given by the user
         a = head[(th >= t - 20) & (th < t)]
         b = head[(th > t) & (th <= t + 20)]
         if len(a) > 3 and len(b) > 3:
@@ -424,7 +426,7 @@ def report_run(ds, run, a):
     geo = None
     sel = None
     if pm.sum() > 50:
-        g, aux = path_geometry(rel_p, P[pm], up)
+        g, aux = path_geometry(rel_p, P[pm], up, parse_ranges(a.turn_window)[0] if a.turn_window else None)
         rep["path"] = g
         geo = (g, aux) if aux is not None else None
         s0, s1 = parse_ranges(a.spin)[0]
@@ -595,6 +597,9 @@ def main():
     ap.add_argument("--window-s", type=float, default=5.0)
     ap.add_argument("--windows", default=DEFAULT_WINDOWS)
     ap.add_argument("--spin", default="340-387")
+    ap.add_argument("--turn-window", default=None,
+                    help='seconds, e.g. "150-260": look for the corner of the path only inside this window '
+                         "(default: the sharpest turn of the whole recording, which can be a different turn)")
     a = ap.parse_args()
     ds = Dataset(a.dataset)
     reps = []

@@ -2,7 +2,7 @@
 # RTAB-Map study of one recording, unattended: R1 + R2 (+ variants), then a report for comparing
 # against another SLAM pipeline (tracking per 5 s window, resets, loop closures, legs/turn, spin, map views).
 #
-#   bash rtabmap_study.sh BAG.db3 [--variant TAG "NAME VALUE [NAME VALUE ...]"]... [--no-variants] [--data DIR] [--force]
+#   bash rtabmap_study.sh BAG.db3 [--variant TAG "NAME VALUE [NAME VALUE ...]"]... [--no-variants] [--data DIR] [--force] [--turn-window 150-260]
 #
 #   1. queue.sh BAG -- --engines rtabmap --no-revisits --no-video   (export + check, R1 + R2, final map; retries)
 #   2. variants: R1 with extra RTAB-Map parameters, one run each (default: d7 = "Vis/MaxDepth 7")
@@ -11,12 +11,13 @@
 # Start it detached:  setsid nohup bash rtabmap_study.sh BAG.db3 > ~/study.log 2>&1 < /dev/null &
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
-BAG="" DATA="$HOME/mv2_data" VARIANTS=() NOVAR=0 FORCE=()
+BAG="" DATA="$HOME/mv2_data" VARIANTS=() NOVAR=0 FORCE=() TURNWIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --variant) VARIANTS+=("$2|$3"); shift 2 ;;
     --no-variants) NOVAR=1 ;;
     --force) FORCE=(--force) ;;
+    --turn-window) TURNWIN="$2"; shift ;;
     --data) DATA="$2"; shift ;;
     -h|--help) sed -n 2,13p "$0"; exit 0 ;;
     *) BAG="$1" ;;
@@ -34,6 +35,7 @@ if [ -z "${MV2_QUEUE_INHIBITED:-}" ] && command -v systemd-inhibit >/dev/null 2>
    && systemd-inhibit --what=sleep:idle --who=mv2 --why=test true >/dev/null 2>&1; then
   export MV2_QUEUE_INHIBITED=1
   ARGS=("$BAG" --data "$DATA" ${FORCE[@]+"${FORCE[@]}"}); [ "$NOVAR" -eq 1 ] && ARGS+=(--no-variants)
+  [ -n "$TURNWIN" ] && ARGS+=(--turn-window "$TURNWIN")
   for v in ${VARIANTS[@]+"${VARIANTS[@]}"}; do ARGS+=(--variant "${v%%|*}" "${v#*|}"); done
   exec systemd-inhibit --what=sleep:idle:handle-lid-switch --who=mapping_v2 --why="RTAB-Map study running" \
     bash "$0" "${ARGS[@]}"
@@ -75,7 +77,7 @@ mapfile -t ALL < <({ runs_for rtabmap_R1 | tail -1; runs_for rtabmap_R2 | tail -
                      for v in ${VARIANTS[@]+"${VARIANTS[@]}"}; do runs_for "rtabmap_R1_${v%%|*}" | tail -1; done; } | grep -v '^$')
 note "report on ${#ALL[@]} run(s): ${ALL[*]##*/}"
 mkdir -p "$OUT"
-python "$REPO/eval/rtabmap_report.py" "$DS" "${ALL[@]}" --out "$OUT" 2>&1 | tee "$OUT/report.log"
+python "$REPO/eval/rtabmap_report.py" "$DS" "${ALL[@]}" --out "$OUT" ${TURNWIN:+--turn-window "$TURNWIN"} 2>&1 | tee "$OUT/report.log"
 python "$REPO/eval/compare_runs.py" "$RUNS" "${ALL[@]##*/}" --dataset "$NAME" > "$OUT/compare.log" 2>&1 || true
 for r in "${ALL[@]}"; do
   rm -rf "$OUT/${r##*/}"; mkdir -p "$OUT/${r##*/}"
